@@ -18,7 +18,7 @@ exports.handler = async (event) => {
   try {
     const token = await getAccessToken();
 
-    // Fetch full track details to get the list of available transcodings
+    // Track metadata (title, artist, artwork, etc.)
     const trackResp = await fetch(`https://api.soundcloud.com/tracks/${trackId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -42,42 +42,39 @@ exports.handler = async (event) => {
       };
     }
 
-    const transcodings = (track.media && track.media.transcodings) || [];
-
-    // Prefer a plain progressive MP3 stream — simplest for a native <audio> element.
-    // Fall back to HLS if that's all that's available.
-    const progressive = transcodings.find(
-      (t) => t.format && t.format.protocol === "progressive"
+    // As of Dec 2025, SoundCloud only serves AAC-HLS streams — progressive
+    // MP3 and HLS-MP3/Opus were removed. This is a separate endpoint from
+    // the track resource itself.
+    const streamsResp = await fetch(
+      `https://api.soundcloud.com/tracks/${trackId}/streams`,
+      { headers: { Authorization: `Bearer ${token}` } }
     );
-    const chosen = progressive || transcodings[0];
 
-    if (!chosen) {
+    if (!streamsResp.ok) {
+      const text = await streamsResp.text();
+      return {
+        statusCode: streamsResp.status,
+        body: JSON.stringify({ error: `Failed to get streams: ${text}` }),
+      };
+    }
+
+    const streams = await streamsResp.json();
+    // Prefer the higher-quality 160k AAC stream, fall back to 96k.
+    const streamUrl = streams.hls_aac_160_url || streams.hls_aac_96_url;
+
+    if (!streamUrl) {
       return {
         statusCode: 404,
-        body: JSON.stringify({ error: "No playable stream found for this track." }),
+        body: JSON.stringify({ error: "No playable AAC-HLS stream found for this track." }),
       };
     }
-
-    const streamInfoResp = await fetch(chosen.url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!streamInfoResp.ok) {
-      const text = await streamInfoResp.text();
-      return {
-        statusCode: streamInfoResp.status,
-        body: JSON.stringify({ error: `Failed to get stream URL: ${text}` }),
-      };
-    }
-
-    const streamInfo = await streamInfoResp.json();
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        streamUrl: streamInfo.url,
-        protocol: chosen.format.protocol,
+        streamUrl,
+        protocol: "hls",
         title: track.title,
         artist: (track.user && track.user.username) || "unknown artist",
         artworkUrl: track.artwork_url
