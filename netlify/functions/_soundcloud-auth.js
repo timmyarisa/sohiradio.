@@ -24,7 +24,7 @@ async function getAccessToken() {
     );
   }
 
-  const response = await fetch("https://secure.soundcloud.com/oauth/token", {
+  const response = await fetch("https://api.soundcloud.com/oauth2/token", {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
