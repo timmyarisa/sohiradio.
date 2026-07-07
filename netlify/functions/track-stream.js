@@ -60,36 +60,15 @@ exports.handler = async (event) => {
 
     const streams = await streamsResp.json();
     // Prefer the higher-quality 160k AAC stream, fall back to 96k.
-    const streamEndpoint = streams.hls_aac_160_url || streams.hls_aac_96_url;
-
-    if (!streamEndpoint) {
-      return {
-        statusCode: 404,
-        body: JSON.stringify({ error: "No playable AAC-HLS stream found for this track." }),
-      };
-    }
-
-    // These fields are API endpoints, not the final playable URL — one more
-    // authenticated request resolves them to the actual signed CDN link.
-    const resolvedResp = await fetch(streamEndpoint, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!resolvedResp.ok) {
-      const text = await resolvedResp.text();
-      return {
-        statusCode: resolvedResp.status,
-        body: JSON.stringify({ error: `Failed to resolve stream URL: ${text}` }),
-      };
-    }
-
-    const resolved = await resolvedResp.json();
-    const streamUrl = resolved.url;
+    // These are already final, playable HLS manifest URLs — no extra
+    // resolution step needed (confirmed: fetching one directly returns
+    // real #EXTM3U playlist content, not a JSON wrapper).
+    const streamUrl = streams.hls_aac_160_url || streams.hls_aac_96_url;
 
     if (!streamUrl) {
       return {
         statusCode: 404,
-        body: JSON.stringify({ error: "Stream resolved but no playable URL was returned." }),
+        body: JSON.stringify({ error: "No playable AAC-HLS stream found for this track." }),
       };
     }
 
