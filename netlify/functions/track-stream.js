@@ -60,12 +60,36 @@ exports.handler = async (event) => {
 
     const streams = await streamsResp.json();
     // Prefer the higher-quality 160k AAC stream, fall back to 96k.
-    const streamUrl = streams.hls_aac_160_url || streams.hls_aac_96_url;
+    const streamEndpoint = streams.hls_aac_160_url || streams.hls_aac_96_url;
+
+    if (!streamEndpoint) {
+      return {
+        statusCode: 404,
+        body: JSON.stringify({ error: "No playable AAC-HLS stream found for this track." }),
+      };
+    }
+
+    // These fields are API endpoints, not the final playable URL — one more
+    // authenticated request resolves them to the actual signed CDN link.
+    const resolvedResp = await fetch(streamEndpoint, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!resolvedResp.ok) {
+      const text = await resolvedResp.text();
+      return {
+        statusCode: resolvedResp.status,
+        body: JSON.stringify({ error: `Failed to resolve stream URL: ${text}` }),
+      };
+    }
+
+    const resolved = await resolvedResp.json();
+    const streamUrl = resolved.url;
 
     if (!streamUrl) {
       return {
         statusCode: 404,
-        body: JSON.stringify({ error: "No playable AAC-HLS stream found for this track." }),
+        body: JSON.stringify({ error: "Stream resolved but no playable URL was returned." }),
       };
     }
 
