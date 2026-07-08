@@ -548,7 +548,8 @@ async function loadAndPlayTrack(trackId, attemptPlay) {
     npArtist.textContent = data.artist;
     updateMediaSessionMetadata(data);
 
-    setStreamSource(data.streamUrl, attemptPlay);
+    const proxiedUrl = `/.netlify/functions/stream-proxy?url=${encodeURIComponent(data.streamUrl)}`;
+    setStreamSource(proxiedUrl, attemptPlay);
   } catch (err) {
     console.error(err);
     npTitle.textContent = "couldn't play this track";
