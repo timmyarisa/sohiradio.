@@ -436,6 +436,49 @@ body::before {
 const AMBIENT_SET_URL = "https://soundcloud.com/sohisounds/sets/sohiradio-default";
 
 const audioEl = document.getElementById('audioEl');
+audioEl.setAttribute('crossorigin', 'anonymous');
+
+// Safari (desktop + iOS) supports HLS natively. Every other browser
+// (Chrome, Arc, Firefox, Edge) needs hls.js to play .m3u8 streams at all.
+const supportsNativeHls = audioEl.canPlayType('application/vnd.apple.mpegurl') !== '';
+let hls = null;
+
+function loadHlsJsIfNeeded(callback) {
+  if (supportsNativeHls || window.Hls) { callback(); return; }
+  const script = document.createElement('script');
+  script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+  script.onload = callback;
+  script.onerror = () => {
+    console.error('Failed to load hls.js');
+    callback();
+  };
+  document.head.appendChild(script);
+}
+
+function setStreamSource(url, autoplay) {
+  if (supportsNativeHls) {
+    audioEl.src = url;
+    if (autoplay) audioEl.play().catch(() => {});
+    return;
+  }
+  loadHlsJsIfNeeded(() => {
+    if (!window.Hls || !window.Hls.isSupported()) {
+      // Last-resort fallback — probably won't work, but don't just silently fail.
+      audioEl.src = url;
+      if (autoplay) audioEl.play().catch(() => {});
+      return;
+    }
+    if (hls) hls.destroy();
+    hls = new window.Hls();
+    hls.loadSource(url);
+    hls.attachMedia(audioEl);
+    if (autoplay) {
+      hls.once(window.Hls.Events.MANIFEST_PARSED, () => {
+        audioEl.play().catch(() => {});
+      });
+    }
+  });
+}
 const playTile = document.getElementById('playTile');
 const pauseTile = document.getElementById('pauseTile');
 const npLabel = document.getElementById('npLabel');
@@ -501,19 +544,11 @@ async function loadAndPlayTrack(trackId, attemptPlay) {
     currentTrack = data;
     currentPermalinkUrl = data.permalinkUrl || "";
 
-    audioEl.src = data.streamUrl;
     npTitle.textContent = data.title;
     npArtist.textContent = data.artist;
     updateMediaSessionMetadata(data);
 
-    if (attemptPlay) {
-      try {
-        await audioEl.play();
-      } catch (playErr) {
-        // Autoplay blocked — first-tap-anywhere listener below will retry.
-        setPlayingUI(false);
-      }
-    }
+    setStreamSource(data.streamUrl, attemptPlay);
   } catch (err) {
     console.error(err);
     npTitle.textContent = "couldn't play this track";
