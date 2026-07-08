@@ -54,8 +54,33 @@ exports.handler = async (event) => {
     }
 
     const allTracks = [...fullTracks, ...fetchedStubs];
+    const candidates = allTracks.filter((t) => t.streamable !== false);
 
-    const tracks = allTracks.map((t) => ({
+    // Check each candidate's actual stream availability up front, in
+    // parallel, so the returned queue only ever contains tracks that will
+    // really play — instead of finding out (and skipping visibly) at
+    // playback time. Not every track has been transcoded to SoundCloud's
+    // current AAC-HLS format yet, especially older uploads.
+    const checked = await Promise.all(
+      candidates.map(async (t) => {
+        try {
+          const streamsResp = await fetch(
+            `https://api.soundcloud.com/tracks/${t.id}/streams`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (!streamsResp.ok) return null;
+          const streams = await streamsResp.json();
+          const hasStream = !!(streams.hls_aac_160_url || streams.hls_aac_96_url);
+          return hasStream ? t : null;
+        } catch (e) {
+          return null;
+        }
+      })
+    );
+
+    const playableTracks = checked.filter(Boolean);
+
+    const tracks = playableTracks.map((t) => ({
       id: t.id,
       title: t.title || "untitled",
       artist: (t.user && t.user.username) || "unknown artist",
@@ -64,7 +89,7 @@ exports.handler = async (event) => {
         : null,
       durationMs: t.duration || 0,
       permalinkUrl: t.permalink_url || null,
-      streamable: t.streamable !== false,
+      streamable: true,
     }));
 
     return {
@@ -73,6 +98,8 @@ exports.handler = async (event) => {
       body: JSON.stringify({
         playlistTitle: playlist.title || "sohiradio",
         tracks,
+        totalInPlaylist: candidates.length,
+        playableCount: tracks.length,
       }),
     };
   } catch (err) {
