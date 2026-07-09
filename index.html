@@ -535,10 +535,10 @@ body::before {
 /* Swap this for your actual "sohiradio-default" playlist URL. */
 const AMBIENT_SET_URL = "https://soundcloud.com/sohiradio/sets/sohiradio-default";
 /* Station IDs: a separate playlist of interstitials, one of which plays
-   every 4–8 songs. Placeholder until the playlist exists — if it's private
-   on SoundCloud, use the secret share link (the URL with the /s-XXXX token)
-   or it won't resolve. Until it resolves, the feature stays dormant. */
-const STATION_ID_SET_URL = "https://soundcloud.com/sohiradio/sets/sohiradio-station-ids";
+   every 4–8 songs. It's a private playlist, so this is its secret share
+   link (the /s-XXXX path segment is what grants access). If it ever stops
+   resolving, the feature just goes dormant. */
+const STATION_ID_SET_URL = "https://soundcloud.com/sohiradio/sets/station-ids/s-mRpzkX2hfvo";
 
 const audioEl = document.getElementById('audioEl');
 audioEl.setAttribute('crossorigin', 'anonymous');
