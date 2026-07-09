@@ -43,14 +43,24 @@ exports.handler = async (event) => {
           const trimmed = line.trim();
           if (!trimmed || trimmed.startsWith("#")) return line;
           // This line is a segment (or nested playlist) URL — resolve it
-          // relative to the manifest's own URL, then route it through us.
+          // relative to the manifest's own URL.
           let resolved;
           try {
-            resolved = new URL(trimmed, targetUrl).toString();
+            resolved = new URL(trimmed, targetUrl);
           } catch (e) {
-            resolved = trimmed;
+            return `/.netlify/functions/stream-proxy?url=${encodeURIComponent(trimmed)}`;
           }
-          return `/.netlify/functions/stream-proxy?url=${encodeURIComponent(resolved)}`;
+          // Segment URLs on SoundCloud's CDN are pre-signed (CloudFront
+          // Policy/Signature params) and served with open CORS, so the
+          // browser can fetch them directly — routing the audio bytes
+          // through this function would only add latency and bandwidth
+          // cost. Only api.soundcloud.com URLs (e.g. nested playlists)
+          // still require the Bearer header, so only those come back
+          // through the proxy.
+          if (resolved.hostname === "api.soundcloud.com") {
+            return `/.netlify/functions/stream-proxy?url=${encodeURIComponent(resolved.toString())}`;
+          }
+          return resolved.toString();
         })
         .join("\n");
 
