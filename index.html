@@ -711,6 +711,27 @@ if ('mediaSession' in navigator) {
   navigator.mediaSession.setActionHandler('pause', () => startOrToggle(false));
   navigator.mediaSession.setActionHandler('previoustrack', () => previousTrack());
   navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack());
+  // 'seekto' isn't supported everywhere — don't let it break the others.
+  try {
+    navigator.mediaSession.setActionHandler('seekto', (details) => {
+      if (!isFinite(audioEl.duration)) return;
+      if (details.fastSeek && 'fastSeek' in audioEl) { audioEl.fastSeek(details.seekTime); return; }
+      audioEl.currentTime = details.seekTime;
+      updatePositionState();
+    });
+  } catch (e) {}
+}
+
+/* Feed the lock screen a live position so it can render a progress bar. */
+let lastPositionUpdate = 0;
+function updatePositionState() {
+  if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
+  if (!isFinite(audioEl.duration) || audioEl.duration <= 0) return;
+  navigator.mediaSession.setPositionState({
+    duration: audioEl.duration,
+    playbackRate: audioEl.playbackRate || 1,
+    position: Math.min(audioEl.currentTime, audioEl.duration),
+  });
 }
 
 function nextTrack() {
@@ -766,6 +787,12 @@ audioEl.addEventListener('error', () => {
 audioEl.addEventListener('timeupdate', () => {
   curTime.textContent = formatTime(audioEl.currentTime);
   if (isFinite(audioEl.duration)) durTime.textContent = formatTime(audioEl.duration);
+  // Keep the lock-screen progress bar honest, about once a second.
+  const now = Date.now();
+  if (now - lastPositionUpdate > 1000) {
+    lastPositionUpdate = now;
+    updatePositionState();
+  }
 });
 
 function startOrToggle(forcePlay) {
