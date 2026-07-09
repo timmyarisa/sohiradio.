@@ -6,6 +6,14 @@
 
 const { getAccessToken } = require("./_soundcloud-auth");
 
+// Resolving a playlist means checking every track's actual stream
+// availability (see below), which is a lot of SoundCloud API calls. The
+// playlist rarely changes, so cache the final response per setUrl and reuse
+// it across requests for as long as the function instance stays warm —
+// same pattern as the token cache in _soundcloud-auth.js.
+const playlistCache = new Map(); // setUrl -> { data, expiresAt }
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
 exports.handler = async (event) => {
   const setUrl = event.queryStringParameters && event.queryStringParameters.url;
 
@@ -13,6 +21,15 @@ exports.handler = async (event) => {
     return {
       statusCode: 400,
       body: JSON.stringify({ error: "Missing required 'url' query parameter." }),
+    };
+  }
+
+  const cached = playlistCache.get(setUrl);
+  if (cached && Date.now() < cached.expiresAt) {
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cached.data),
     };
   }
 
@@ -92,15 +109,22 @@ exports.handler = async (event) => {
       streamable: true,
     }));
 
+    const responseData = {
+      playlistTitle: playlist.title || "sohiradio",
+      tracks,
+      totalInPlaylist: candidates.length,
+      playableCount: tracks.length,
+    };
+
+    playlistCache.set(setUrl, {
+      data: responseData,
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    });
+
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        playlistTitle: playlist.title || "sohiradio",
-        tracks,
-        totalInPlaylist: candidates.length,
-        playableCount: tracks.length,
-      }),
+      body: JSON.stringify(responseData),
     };
   } catch (err) {
     return {
