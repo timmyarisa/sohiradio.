@@ -612,6 +612,7 @@ let queue = [];          // lightweight track summaries from resolve-playlist
 let idQueue = [];        // station-ID interstitials (empty = feature dormant)
 let currentTrack = null; // full details of the currently loaded track
 let currentIsStationId = false;
+let gapCounted = false;  // current track already counted toward the ID gap
 let currentPermalinkUrl = "";
 let history = [];        // stack of previously played track ids (songs only)
 const MAX_HISTORY = 20;
@@ -746,15 +747,24 @@ function pickNextTrackId() {
 }
 
 /* Every 4–8 songs (random each time), the next pick comes from the
-   station-ID pool instead. IDs have their own shuffle bag so they don't
-   repeat until the whole pool has played. */
+   station-ID pool instead. Only songs that actually play for 30+ seconds
+   count toward the gap (see the timeupdate watcher) — surfing past tracks
+   doesn't hurry the next ID along. IDs have their own shuffle bag so they
+   don't repeat until the whole pool has played. */
 const STATION_ID_MIN_GAP = 4;
 const STATION_ID_MAX_GAP = 8;
+const GAP_COUNT_AT_SEC = 30; // a song must play this long to count
 function randGap() {
   return STATION_ID_MIN_GAP +
     Math.floor(Math.random() * (STATION_ID_MAX_GAP - STATION_ID_MIN_GAP + 1));
 }
-let songsUntilStationId = randGap();
+/* The next track is prefetched at the START of the current one, so by the
+   time the counter is consulted for slot N+1, the song in slot N has
+   usually already counted itself. Each cycle's reset therefore absorbs one
+   decrement from the song playing when the ID gets picked — except the
+   very first cycle, which has no such song; starting one lower keeps the
+   first gap inside 4–8 too. */
+let songsUntilStationId = randGap() - 1;
 let idShuffleBag = [];
 function pickNext() {
   if (idQueue.length > 0 && songsUntilStationId <= 0) {
@@ -764,7 +774,6 @@ function pickNext() {
     }
     return { id: idShuffleBag.shift(), isStationId: true };
   }
-  songsUntilStationId--;
   return { id: pickNextTrackId(), isStationId: false };
 }
 
@@ -777,6 +786,7 @@ function applyLoadedTrack(trackId, data, attemptPlay, isStationId) {
   // history and shuffle both depend on currentTrack.id existing.
   currentTrack = Object.assign({ id: Number(trackId) }, data);
   currentIsStationId = !!isStationId;
+  gapCounted = false; // this track hasn't earned its 30s yet
   // Station IDs are masked interstitials: broadcast branding instead of the
   // file's real title, and no SoundCloud permalink to click out to.
   currentPermalinkUrl = isStationId ? "" : (data.permalinkUrl || "");
@@ -990,6 +1000,12 @@ audioEl.addEventListener('error', () => {
 audioEl.addEventListener('timeupdate', () => {
   curTime.textContent = formatTime(audioEl.currentTime);
   if (isFinite(audioEl.duration)) durTime.textContent = formatTime(audioEl.duration);
+  // A song counts toward the next station ID only once it has genuinely
+  // played for a while — skipped-past tracks don't advance the gap.
+  if (!gapCounted && hasStarted && !currentIsStationId && audioEl.currentTime >= GAP_COUNT_AT_SEC) {
+    gapCounted = true;
+    songsUntilStationId--;
+  }
   // Keep the lock-screen progress bar honest, about once a second.
   const now = Date.now();
   if (now - lastPositionUpdate > 1000) {
