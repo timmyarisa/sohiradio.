@@ -393,8 +393,9 @@ body::before {
   text-transform: uppercase;
   letter-spacing: 0.14em;
   margin-top: 10px;
-  animation: tapCuePulse 2.2s ease-in-out infinite;
+  opacity: 0.4;
 }
+.boot-cue.ready { animation: tapCuePulse 2.2s ease-in-out infinite; }
 .boot-footer {
   position: absolute;
   bottom: 40px;
@@ -441,7 +442,7 @@ body::before {
   </div>
   <div class="boot-wordmark">sohiradio.</div>
   <div class="boot-tagline">tuning frequencies<span class="boot-dots"><span>.</span><span>.</span><span>.</span></span></div>
-  <div class="boot-cue" id="bootCue">tap anywhere to tune in</div>
+  <div class="boot-cue" id="bootCue">warming up…</div>
   <div class="boot-footer">streaming via soundcloud</div>
 </div>
 
@@ -527,12 +528,17 @@ body::before {
 <!-- <audio>, not <video>: iOS classifies the session as music, which is
      what makes the lock screen show prev/next track controls instead of
      the video-style ±10s skip buttons. -->
-<audio id="audioEl" preload="none" style="display:none;"></audio>
+<audio id="audioEl" preload="auto" style="display:none;"></audio>
 
 <script>
 /* ---------- sohiradio audio engine (real SoundCloud API, real <audio> element) ---------- */
 /* Swap this for your actual "sohiradio-default" playlist URL. */
 const AMBIENT_SET_URL = "https://soundcloud.com/sohiradio/sets/sohiradio-default";
+/* Station IDs: a separate playlist of interstitials, one of which plays
+   every 4–8 songs. Placeholder until the playlist exists — if it's private
+   on SoundCloud, use the secret share link (the URL with the /s-XXXX token)
+   or it won't resolve. Until it resolves, the feature stays dormant. */
+const STATION_ID_SET_URL = "https://soundcloud.com/sohiradio/sets/sohiradio-station-ids";
 
 const audioEl = document.getElementById('audioEl');
 audioEl.setAttribute('crossorigin', 'anonymous');
@@ -603,10 +609,14 @@ const statusText = document.getElementById('statusText');
 let isPlaying = false;
 let hasStarted = false;
 let queue = [];          // lightweight track summaries from resolve-playlist
+let idQueue = [];        // station-ID interstitials (empty = feature dormant)
 let currentTrack = null; // full details of the currently loaded track
+let currentIsStationId = false;
 let currentPermalinkUrl = "";
-let history = [];        // stack of previously played track ids
+let history = [];        // stack of previously played track ids (songs only)
 const MAX_HISTORY = 20;
+let bootTapped = false;      // entry tap happened (possibly before ready)
+let bootReady = false;       // boot preload settled; the entry tap starts music
 let failureStreak = 0;   // consecutive tracks that failed to load or play
 let hlsRecoveries = 0;   // in-track hls.js recovery attempts
 
@@ -624,7 +634,8 @@ function handlePlaybackError(context) {
     failureStreak = 0;
     return;
   }
-  loadAndPlayTrack(pickNextTrackId(), true);
+  const pick = pickNext();
+  loadAndPlayTrack(pick.id, true, pick.isStationId);
 }
 
 npTitle.textContent = "loading playlist...";
@@ -647,13 +658,11 @@ async function loadQueue() {
     const data = await resp.json();
     queue = (data.tracks || []).filter((t) => t.streamable);
     if (queue.length === 0) throw new Error("Playlist resolved but has no streamable tracks.");
+    loadIdQueue();
     // The boot screen is the entry gate: it stays up until the visitor
-    // taps. Only proceed now if the tap already happened while loading;
-    // otherwise unlockAutoplay() takes it from here.
-    if (bootTapped) {
-      hideBootScreen();
-      tryAutoplay();
-    }
+    // taps, and the tap cue only appears once the first track is loaded
+    // and ready to sound immediately.
+    preloadFirstTrack();
   } catch (err) {
     console.error(err);
     npTitle.textContent = "couldn't load playlist";
@@ -663,17 +672,72 @@ async function loadQueue() {
 }
 loadQueue();
 
+/* Station-ID playlist load is fire-and-forget: until the playlist exists
+   and resolves, idQueue stays empty and the radio is all songs. */
+async function loadIdQueue() {
+  try {
+    const resp = await fetch(`/.netlify/functions/resolve-playlist?url=${encodeURIComponent(STATION_ID_SET_URL)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    idQueue = (data.tracks || []).filter((t) => t.streamable);
+  } catch (e) {}
+}
+
+function setBootCueReady() {
+  bootReady = true;
+  const bootCue = document.getElementById('bootCue');
+  if (bootCue) {
+    bootCue.textContent = 'tap anywhere to tune in';
+    bootCue.classList.add('ready');
+  }
+}
+
+/* Load the first track's stream while the boot screen is still up, so the
+   entry tap goes straight to play() with the source already in place —
+   no post-tap fetches, no silent gap. */
+async function preloadFirstTrack() {
+  const pick = pickNext();
+  try {
+    const resp = await fetch(`/.netlify/functions/track-stream?id=${pick.id}`);
+    if (!resp.ok) throw new Error(`track-stream failed: ${resp.status}`);
+    const data = await resp.json();
+    loadSeq++; // invalidate anything else in flight
+    if (bootTapped) {
+      // The tap already happened (it was spent unlocking the element) —
+      // don't wait for another one.
+      hasStarted = true;
+      hideBootScreen();
+      applyLoadedTrack(pick.id, data, true, pick.isStationId);
+    } else {
+      applyLoadedTrack(pick.id, data, false, pick.isStationId);
+      setBootCueReady();
+    }
+  } catch (err) {
+    console.error("first-track preload failed:", err);
+    // Fall back to the old behavior: the entry tap fetches fresh.
+    if (bootTapped) {
+      hideBootScreen();
+      playRandomTrack();
+    } else {
+      setBootCueReady();
+    }
+  }
+}
+
 /* Shuffle bag: play every track once, in random order, before anything
    repeats. Refill + reshuffle when the bag empties; never let a new cycle
    open with the track that just finished. */
+function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
 let shuffleBag = [];
 function pickNextTrackId() {
   if (shuffleBag.length === 0) {
-    shuffleBag = queue.map((t) => t.id);
-    for (let i = shuffleBag.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffleBag[i], shuffleBag[j]] = [shuffleBag[j], shuffleBag[i]];
-    }
+    shuffleBag = shuffleInPlace(queue.map((t) => t.id));
     if (shuffleBag.length > 1 && currentTrack && shuffleBag[0] === currentTrack.id) {
       shuffleBag.push(shuffleBag.shift());
     }
@@ -681,19 +745,51 @@ function pickNextTrackId() {
   return shuffleBag.shift();
 }
 
+/* Every 4–8 songs (random each time), the next pick comes from the
+   station-ID pool instead. IDs have their own shuffle bag so they don't
+   repeat until the whole pool has played. */
+const STATION_ID_MIN_GAP = 4;
+const STATION_ID_MAX_GAP = 8;
+function randGap() {
+  return STATION_ID_MIN_GAP +
+    Math.floor(Math.random() * (STATION_ID_MAX_GAP - STATION_ID_MIN_GAP + 1));
+}
+let songsUntilStationId = randGap();
+let idShuffleBag = [];
+function pickNext() {
+  if (idQueue.length > 0 && songsUntilStationId <= 0) {
+    songsUntilStationId = randGap();
+    if (idShuffleBag.length === 0) {
+      idShuffleBag = shuffleInPlace(idQueue.map((t) => t.id));
+    }
+    return { id: idShuffleBag.shift(), isStationId: true };
+  }
+  songsUntilStationId--;
+  return { id: pickNextTrackId(), isStationId: false };
+}
+
 /* Point the player at an already-fetched track: metadata, lock screen,
    and stream source. Deliberately synchronous — when a track ends while
    the phone is locked, iOS suspends the page the moment audio goes
    silent, so the advance to a prefetched track must not await anything. */
-function applyLoadedTrack(trackId, data, attemptPlay) {
+function applyLoadedTrack(trackId, data, attemptPlay, isStationId) {
   // The response may not carry an id, so keep the one we requested —
   // history and shuffle both depend on currentTrack.id existing.
   currentTrack = Object.assign({ id: Number(trackId) }, data);
-  currentPermalinkUrl = data.permalinkUrl || "";
+  currentIsStationId = !!isStationId;
+  // Station IDs are masked interstitials: broadcast branding instead of the
+  // file's real title, and no SoundCloud permalink to click out to.
+  currentPermalinkUrl = isStationId ? "" : (data.permalinkUrl || "");
+  const shownTitle = isStationId ? "station id" : data.title;
+  const shownArtist = isStationId ? "sohiradio." : data.artist;
 
-  npTitle.textContent = data.title;
-  npArtist.textContent = data.artist;
-  updateMediaSessionMetadata(data);
+  npTitle.textContent = shownTitle;
+  npArtist.textContent = shownArtist;
+  updateMediaSessionMetadata({
+    title: shownTitle,
+    artist: shownArtist,
+    artworkUrl: isStationId ? null : data.artworkUrl,
+  });
 
   const proxiedUrl = `/.netlify/functions/stream-proxy?url=${encodeURIComponent(data.streamUrl)}`;
   setStreamSource(proxiedUrl, attemptPlay);
@@ -703,24 +799,24 @@ function applyLoadedTrack(trackId, data, attemptPlay) {
    playing (a page playing audio keeps running in the background; a page
    in a silent gap between tracks does not — that's why auto-advance was
    dying in the car). */
-let nextUp = null; // { id, data }
+let nextUp = null; // { id, data, isStationId }
 let prefetchInFlight = false;
 async function prefetchNextTrack() {
   if (nextUp || prefetchInFlight || queue.length < 2) return;
   prefetchInFlight = true;
   try {
-    const id = pickNextTrackId();
-    const resp = await fetch(`/.netlify/functions/track-stream?id=${id}`);
+    const pick = pickNext();
+    const resp = await fetch(`/.netlify/functions/track-stream?id=${pick.id}`);
     if (resp.ok) {
       const data = await resp.json();
-      nextUp = { id, data };
+      nextUp = { id: pick.id, data, isStationId: pick.isStationId };
     }
     // On failure nextUp stays null; nextTrack() falls back to fetching.
   } catch (e) {} finally { prefetchInFlight = false; }
 }
 
 let loadSeq = 0; // guards against rapid skips resolving out of order
-async function loadAndPlayTrack(trackId, attemptPlay) {
+async function loadAndPlayTrack(trackId, attemptPlay, isStationId) {
   const seq = ++loadSeq;
   npLabel.textContent = 'CONNECTING';
   npTitle.textContent = "tuning in...";
@@ -733,7 +829,7 @@ async function loadAndPlayTrack(trackId, attemptPlay) {
     }
     const data = await resp.json();
     if (seq !== loadSeq) return;
-    applyLoadedTrack(trackId, data, attemptPlay);
+    applyLoadedTrack(trackId, data, attemptPlay, isStationId);
   } catch (err) {
     if (seq !== loadSeq) return;
     console.error(err);
@@ -745,7 +841,10 @@ async function loadAndPlayTrack(trackId, attemptPlay) {
     // requests forever.
     failureStreak++;
     if (queue.length > 1 && failureStreak < Math.min(queue.length, 5)) {
-      setTimeout(() => loadAndPlayTrack(pickNextTrackId(), attemptPlay), 800);
+      setTimeout(() => {
+        const pick = pickNext();
+        loadAndPlayTrack(pick.id, attemptPlay, pick.isStationId);
+      }, 800);
     } else {
       npTitle.textContent = "stream trouble — tap play to retry";
       failureStreak = 0;
@@ -755,11 +854,8 @@ async function loadAndPlayTrack(trackId, attemptPlay) {
 
 function playRandomTrack() {
   hasStarted = true;
-  loadAndPlayTrack(pickNextTrackId(), true);
-}
-
-function tryAutoplay() {
-  playRandomTrack();
+  const pick = pickNext();
+  loadAndPlayTrack(pick.id, true, pick.isStationId);
 }
 
 function updateMediaSessionMetadata(track) {
@@ -819,7 +915,11 @@ function updatePositionState() {
 
 function nextTrack(forcePlay) {
   if (queue.length === 0) return;
-  if (currentTrack && currentTrack.id != null && !isNaN(currentTrack.id)) {
+  // Station IDs always play out: user skips (button or lock screen) are
+  // ignored; only the track-end auto-advance (forcePlay) moves past one.
+  if (currentIsStationId && !forcePlay) return;
+  // Station IDs stay out of history so prev never returns to one.
+  if (!currentIsStationId && currentTrack && currentTrack.id != null && !isNaN(currentTrack.id)) {
     history.push(currentTrack.id);
     if (history.length > MAX_HISTORY) history.shift();
   }
@@ -831,18 +931,20 @@ function nextTrack(forcePlay) {
     const up = nextUp;
     nextUp = null;
     loadSeq++; // invalidate any older in-flight loads
-    applyLoadedTrack(up.id, up.data, shouldPlay);
+    applyLoadedTrack(up.id, up.data, shouldPlay, up.isStationId);
   } else {
-    loadAndPlayTrack(pickNextTrackId(), shouldPlay);
+    const pick = pickNext();
+    loadAndPlayTrack(pick.id, shouldPlay, pick.isStationId);
   }
 }
 
 function previousTrack() {
+  if (currentIsStationId) return; // IDs always play out
   // Skip over any unusable entries (older sessions could store undefined).
   while (history.length > 0) {
     const id = history.pop();
     if (id != null && !isNaN(id)) {
-      loadAndPlayTrack(id, isPlaying || !hasStarted);
+      loadAndPlayTrack(id, isPlaying || !hasStarted, false);
       return;
     }
   }
@@ -870,7 +972,9 @@ setPlayingUI(false);
 
 audioEl.addEventListener('play', () => setPlayingUI(true));
 audioEl.addEventListener('pause', () => setPlayingUI(false));
-audioEl.addEventListener('ended', () => nextTrack(true));
+// Before hasStarted the only thing that can end is the ~2ms silent unlock
+// blip — advancing on it would race the boot preload with a second load.
+audioEl.addEventListener('ended', () => { if (hasStarted) nextTrack(true); });
 audioEl.addEventListener('playing', () => {
   failureStreak = 0;
   applyMediaSessionHandlers();
@@ -980,25 +1084,36 @@ function showCueIfBlocked(err) {
    the playlist has actually loaded) is allowed through. */
 const SILENT_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
 
-let bootTapped = false; // entry tap happened (possibly before the queue loaded)
 function unlockAutoplay() {
   if (isPlaying) return;
   bootTapped = true;
-  if (queue.length === 0) {
-    // Boot-screen tap: nothing to play yet. Spend the gesture unlocking
-    // the element so tryAutoplay() succeeds the moment the queue arrives.
+  if (!bootReady && !hasStarted) {
+    // Boot-screen tap before the first track is ready: nothing to play
+    // yet. Spend the gesture unlocking the element so the programmatic
+    // play() succeeds the moment the preload settles.
     if (!audioEl.src) {
       audioEl.src = SILENT_WAV;
       audioEl.play().catch(() => {});
-      const bootCue = document.getElementById('bootCue');
-      if (bootCue) bootCue.textContent = 'starting…';
     }
+    const bootCue = document.getElementById('bootCue');
+    if (bootCue) bootCue.textContent = 'starting…';
     return;
   }
   hideBootScreen();
   hideTapCue();
-  if (!hasStarted) playRandomTrack();
-  else audioEl.play().catch(() => {});
+  if (!hasStarted) {
+    hasStarted = true;
+    if (!currentTrack) { playRandomTrack(); return; } // preload failed — fetch fresh
+    // The source is already loaded, so this starts immediately.
+    audioEl.play().catch((err) => {
+      if (err && err.name === 'NotAllowedError') { showTapCue(); return; }
+      // Most likely the prefetched stream URL expired while the visitor
+      // idled on the boot screen — fetch a fresh one.
+      loadAndPlayTrack(currentTrack.id, true, currentIsStationId);
+    });
+  } else {
+    audioEl.play().catch(() => {});
+  }
 }
 /* Disarm on the first successful start, not on first tap: a tap during the
    boot screen (before the queue exists) must not burn the listeners. After
