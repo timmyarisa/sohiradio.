@@ -492,7 +492,10 @@ body::before {
   </div>
 </div>
 
-<video id="audioEl" preload="none" style="display:none;width:0;height:0;" playsinline></video>
+<!-- <audio>, not <video>: iOS classifies the session as music, which is
+     what makes the lock screen show prev/next track controls instead of
+     the video-style ±10s skip buttons. -->
+<audio id="audioEl" preload="none" style="display:none;"></audio>
 
 <script>
 /* ---------- sohiradio audio engine (real SoundCloud API, real <audio> element) ---------- */
@@ -639,6 +642,44 @@ function pickNextTrackId() {
   return shuffleBag.shift();
 }
 
+/* Point the player at an already-fetched track: metadata, lock screen,
+   and stream source. Deliberately synchronous — when a track ends while
+   the phone is locked, iOS suspends the page the moment audio goes
+   silent, so the advance to a prefetched track must not await anything. */
+function applyLoadedTrack(trackId, data, attemptPlay) {
+  // The response may not carry an id, so keep the one we requested —
+  // history and shuffle both depend on currentTrack.id existing.
+  currentTrack = Object.assign({ id: Number(trackId) }, data);
+  currentPermalinkUrl = data.permalinkUrl || "";
+
+  npTitle.textContent = data.title;
+  npArtist.textContent = data.artist;
+  updateMediaSessionMetadata(data);
+
+  const proxiedUrl = `/.netlify/functions/stream-proxy?url=${encodeURIComponent(data.streamUrl)}`;
+  setStreamSource(proxiedUrl, attemptPlay);
+}
+
+/* Prefetch the next track's stream while the current one is still
+   playing (a page playing audio keeps running in the background; a page
+   in a silent gap between tracks does not — that's why auto-advance was
+   dying in the car). */
+let nextUp = null; // { id, data }
+let prefetchInFlight = false;
+async function prefetchNextTrack() {
+  if (nextUp || prefetchInFlight || queue.length < 2) return;
+  prefetchInFlight = true;
+  try {
+    const id = pickNextTrackId();
+    const resp = await fetch(`/.netlify/functions/track-stream?id=${id}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      nextUp = { id, data };
+    }
+    // On failure nextUp stays null; nextTrack() falls back to fetching.
+  } catch (e) {} finally { prefetchInFlight = false; }
+}
+
 let loadSeq = 0; // guards against rapid skips resolving out of order
 async function loadAndPlayTrack(trackId, attemptPlay) {
   const seq = ++loadSeq;
@@ -653,17 +694,7 @@ async function loadAndPlayTrack(trackId, attemptPlay) {
     }
     const data = await resp.json();
     if (seq !== loadSeq) return;
-    // The response may not carry an id, so keep the one we requested —
-    // history and shuffle both depend on currentTrack.id existing.
-    currentTrack = Object.assign({ id: Number(trackId) }, data);
-    currentPermalinkUrl = data.permalinkUrl || "";
-
-    npTitle.textContent = data.title;
-    npArtist.textContent = data.artist;
-    updateMediaSessionMetadata(data);
-
-    const proxiedUrl = `/.netlify/functions/stream-proxy?url=${encodeURIComponent(data.streamUrl)}`;
-    setStreamSource(proxiedUrl, attemptPlay);
+    applyLoadedTrack(trackId, data, attemptPlay);
   } catch (err) {
     if (seq !== loadSeq) return;
     console.error(err);
@@ -706,14 +737,22 @@ function updateMediaSessionMetadata(track) {
   });
 }
 
-if ('mediaSession' in navigator) {
-  navigator.mediaSession.setActionHandler('play', () => startOrToggle(true));
-  navigator.mediaSession.setActionHandler('pause', () => startOrToggle(false));
-  navigator.mediaSession.setActionHandler('previoustrack', () => previousTrack());
-  navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack());
+/* iOS quirk: action handlers registered before any audio has played are
+   often ignored, which leaves the lock screen showing generic ±10s skip
+   buttons. Registering is idempotent, so we (re)apply on every 'playing'
+   event as well as once up front. */
+function applyMediaSessionHandlers() {
+  if (!('mediaSession' in navigator)) return;
+  const ms = navigator.mediaSession;
+  try {
+    ms.setActionHandler('play', () => startOrToggle(true));
+    ms.setActionHandler('pause', () => startOrToggle(false));
+    ms.setActionHandler('previoustrack', () => previousTrack());
+    ms.setActionHandler('nexttrack', () => nextTrack());
+  } catch (e) {}
   // 'seekto' isn't supported everywhere — don't let it break the others.
   try {
-    navigator.mediaSession.setActionHandler('seekto', (details) => {
+    ms.setActionHandler('seekto', (details) => {
       if (!isFinite(audioEl.duration)) return;
       if (details.fastSeek && 'fastSeek' in audioEl) { audioEl.fastSeek(details.seekTime); return; }
       audioEl.currentTime = details.seekTime;
@@ -721,6 +760,7 @@ if ('mediaSession' in navigator) {
     });
   } catch (e) {}
 }
+applyMediaSessionHandlers();
 
 /* Feed the lock screen a live position so it can render a progress bar. */
 let lastPositionUpdate = 0;
@@ -734,13 +774,24 @@ function updatePositionState() {
   });
 }
 
-function nextTrack() {
+function nextTrack(forcePlay) {
   if (queue.length === 0) return;
   if (currentTrack && currentTrack.id != null && !isNaN(currentTrack.id)) {
     history.push(currentTrack.id);
     if (history.length > MAX_HISTORY) history.shift();
   }
-  loadAndPlayTrack(pickNextTrackId(), isPlaying || !hasStarted);
+  // forcePlay covers track-end auto-advance: the element fires 'pause'
+  // right before 'ended', so isPlaying is already false by the time we
+  // get here even though the radio should absolutely keep going.
+  const shouldPlay = forcePlay || isPlaying || !hasStarted;
+  if (nextUp) {
+    const up = nextUp;
+    nextUp = null;
+    loadSeq++; // invalidate any older in-flight loads
+    applyLoadedTrack(up.id, up.data, shouldPlay);
+  } else {
+    loadAndPlayTrack(pickNextTrackId(), shouldPlay);
+  }
 }
 
 function previousTrack() {
@@ -776,8 +827,13 @@ setPlayingUI(false);
 
 audioEl.addEventListener('play', () => setPlayingUI(true));
 audioEl.addEventListener('pause', () => setPlayingUI(false));
-audioEl.addEventListener('ended', () => nextTrack());
-audioEl.addEventListener('playing', () => { failureStreak = 0; });
+audioEl.addEventListener('ended', () => nextTrack(true));
+audioEl.addEventListener('playing', () => {
+  failureStreak = 0;
+  applyMediaSessionHandlers();
+  updatePositionState();
+  prefetchNextTrack();
+});
 // Native HLS playback (Safari) surfaces failures on the element itself;
 // in hls.js mode errors arrive via the Hls ERROR event instead.
 audioEl.addEventListener('error', () => {
