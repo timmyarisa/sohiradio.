@@ -386,6 +386,15 @@ body::before {
   0%, 100% { opacity: 0; }
   50% { opacity: 1; }
 }
+.boot-cue {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  margin-top: 10px;
+  animation: tapCuePulse 2.2s ease-in-out infinite;
+}
 .boot-footer {
   position: absolute;
   bottom: 40px;
@@ -432,6 +441,7 @@ body::before {
   </div>
   <div class="boot-wordmark">sohiradio.</div>
   <div class="boot-tagline">tuning frequencies<span class="boot-dots"><span>.</span><span>.</span><span>.</span></span></div>
+  <div class="boot-cue" id="bootCue">tap anywhere to tune in</div>
   <div class="boot-footer">streaming via soundcloud</div>
 </div>
 
@@ -954,17 +964,35 @@ function showCueIfBlocked(err) {
   if (err && err.name === 'NotAllowedError') showTapCue();
 }
 
+/* ~2ms of silence. Playing it inside a tap handler marks the <audio>
+   element as user-activated on iOS, so a later programmatic play() (once
+   the playlist has actually loaded) is allowed through. */
+const SILENT_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+
 function unlockAutoplay() {
-  if (isPlaying || queue.length === 0) return;
+  if (isPlaying) return;
+  if (queue.length === 0) {
+    // Boot-screen tap: nothing to play yet. Spend the gesture unlocking
+    // the element so tryAutoplay() succeeds the moment the queue arrives.
+    if (!audioEl.src) {
+      audioEl.src = SILENT_WAV;
+      audioEl.play().catch(() => {});
+      const bootCue = document.getElementById('bootCue');
+      if (bootCue) bootCue.textContent = 'starting…';
+    }
+    return;
+  }
   hideTapCue();
   if (!hasStarted) playRandomTrack();
   else audioEl.play().catch(() => {});
 }
 /* Disarm on the first successful start, not on first tap: a tap during the
    boot screen (before the queue exists) must not burn the listeners. After
-   playback has started once, taps must never resume a deliberate pause. */
+   playback has started once, taps must never resume a deliberate pause.
+   The silent unlock blip plays before hasStarted — it doesn't count. */
 audioEl.addEventListener('playing', () => {
   hideTapCue();
+  if (!hasStarted) return;
   document.removeEventListener('touchstart', unlockAutoplay);
   document.removeEventListener('click', unlockAutoplay);
 });

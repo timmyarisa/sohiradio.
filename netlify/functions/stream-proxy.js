@@ -68,7 +68,11 @@ exports.handler = async (event) => {
         statusCode: 200,
         headers: {
           "Content-Type": "application/vnd.apple.mpegurl",
-          "Cache-Control": "no-cache",
+          // These are VOD playlists — the content never changes for a given
+          // URL. A short browser-cache window lets iOS Safari resume from a
+          // pause without a full function round-trip, while staying well
+          // inside the validity window of the pre-signed segment URLs.
+          "Cache-Control": "private, max-age=120",
         },
         body: rewritten,
       };
