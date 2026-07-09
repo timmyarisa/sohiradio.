@@ -635,8 +635,10 @@ function hideBootScreen() {
   boot.classList.add('hidden');
   setTimeout(() => { boot.style.display = 'none'; }, 550);
 }
-// Safety net so nobody's stuck on the boot screen if a request is slow/fails.
-setTimeout(hideBootScreen, 8000);
+// Safety net: if the playlist request hangs, fall through to the player's
+// status text instead of a stuck boot screen. Once the queue has loaded,
+// the boot screen stays up by design, waiting for the entry tap.
+setTimeout(() => { if (queue.length === 0) hideBootScreen(); }, 8000);
 
 async function loadQueue() {
   try {
@@ -645,8 +647,13 @@ async function loadQueue() {
     const data = await resp.json();
     queue = (data.tracks || []).filter((t) => t.streamable);
     if (queue.length === 0) throw new Error("Playlist resolved but has no streamable tracks.");
-    hideBootScreen();
-    tryAutoplay();
+    // The boot screen is the entry gate: it stays up until the visitor
+    // taps. Only proceed now if the tap already happened while loading;
+    // otherwise unlockAutoplay() takes it from here.
+    if (bootTapped) {
+      hideBootScreen();
+      tryAutoplay();
+    }
   } catch (err) {
     console.error(err);
     npTitle.textContent = "couldn't load playlist";
@@ -969,8 +976,10 @@ function showCueIfBlocked(err) {
    the playlist has actually loaded) is allowed through. */
 const SILENT_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
 
+let bootTapped = false; // entry tap happened (possibly before the queue loaded)
 function unlockAutoplay() {
   if (isPlaying) return;
+  bootTapped = true;
   if (queue.length === 0) {
     // Boot-screen tap: nothing to play yet. Spend the gesture unlocking
     // the element so tryAutoplay() succeeds the moment the queue arrives.
@@ -982,6 +991,7 @@ function unlockAutoplay() {
     }
     return;
   }
+  hideBootScreen();
   hideTapCue();
   if (!hasStarted) playRandomTrack();
   else audioEl.play().catch(() => {});
