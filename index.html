@@ -494,6 +494,8 @@ let hasStarted = false;
 let queue = [];          // lightweight track summaries from resolve-playlist
 let currentTrack = null; // full details of the currently loaded track
 let currentPermalinkUrl = "";
+let history = [];        // stack of previously played track ids
+const MAX_HISTORY = 20;
 
 npTitle.textContent = "loading playlist...";
 
@@ -589,13 +591,23 @@ function updateMediaSessionMetadata(track) {
 if ('mediaSession' in navigator) {
   navigator.mediaSession.setActionHandler('play', () => startOrToggle(true));
   navigator.mediaSession.setActionHandler('pause', () => startOrToggle(false));
-  navigator.mediaSession.setActionHandler('previoustrack', () => nextTrack());
+  navigator.mediaSession.setActionHandler('previoustrack', () => previousTrack());
   navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack());
 }
 
 function nextTrack() {
   if (queue.length === 0) return;
+  if (currentTrack) {
+    history.push(currentTrack.id);
+    if (history.length > MAX_HISTORY) history.shift();
+  }
   const id = pickNextTrackId(currentTrack ? currentTrack.id : null);
+  loadAndPlayTrack(id, isPlaying || !hasStarted);
+}
+
+function previousTrack() {
+  if (history.length === 0) return;
+  const id = history.pop();
   loadAndPlayTrack(id, isPlaying || !hasStarted);
 }
 
@@ -635,7 +647,7 @@ function startOrToggle(forcePlay) {
 
 playTile.addEventListener('click', () => startOrToggle(true));
 pauseTile.addEventListener('click', () => startOrToggle(false));
-document.getElementById('prevBtn').addEventListener('click', () => nextTrack());
+document.getElementById('prevBtn').addEventListener('click', () => previousTrack());
 document.getElementById('skipBtn').addEventListener('click', () => nextTrack());
 
 document.getElementById('soundcloudLinkBtn').addEventListener('click', () => {
