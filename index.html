@@ -35,6 +35,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 24px;
+  padding-top: 62px;
   position: relative;
   overflow-x: hidden;
 }
@@ -47,6 +48,53 @@ body::before {
   opacity: 0.07;
   z-index: 999;
   background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPScyMDAnIGhlaWdodD0nMjAwJz48ZmlsdGVyIGlkPSdub2lzZSc+PGZlVHVyYnVsZW5jZSB0eXBlPSdmcmFjdGFsTm9pc2UnIGJhc2VGcmVxdWVuY3k9JzAuOScgbnVtT2N0YXZlcz0nMicgc3RpdGNoVGlsZXM9J3N0aXRjaCcvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPScxMDAlJyBoZWlnaHQ9JzEwMCUnIGZpbHRlcj0ndXJsKCNub2lzZSknLz48L3N2Zz4=");
+}
+
+/* ===== TOP MENU BAR ===== */
+.menubar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: rgba(10, 10, 10, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+  z-index: 100;
+}
+.menubar-left, .menubar-right { display: flex; align-items: center; gap: 18px; }
+.menubar-logo {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin-right: 6px;
+}
+.menubar-link {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+.menubar-link:hover { color: var(--text); }
+.menubar-link.active { color: var(--text); }
+.menubar-link.active::before { content: "● "; font-size: 7px; vertical-align: 1px; }
+.menubar-tag {
+  font-size: 8px;
+  border: 1px solid var(--line);
+  padding: 1px 4px;
+  margin-left: 5px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  vertical-align: 1px;
 }
 
 .window {
@@ -268,8 +316,12 @@ body::before {
 .icon-btn svg { width: 15px; height: 15px; }
 
 @media (max-width: 480px) {
-  body { padding: 0; align-items: stretch; }
-  .window { max-width: 100%; min-height: 100vh; min-height: 100dvh; justify-content: space-between; }
+  body { padding: 0; padding-top: 38px; align-items: stretch; }
+  .window { max-width: 100%; min-height: calc(100vh - 38px); min-height: calc(100dvh - 38px); justify-content: space-between; }
+  .menubar { padding: 0 14px; }
+  .menubar-left, .menubar-right { gap: 14px; }
+  /* not-yet-live sections don't earn space on small screens */
+  .menubar-link[aria-disabled="true"] { display: none; }
   .content { padding: 26px 20px 20px; }
   .wordmark { font-size: 42px; }
   .tv-screen { min-height: 220px; }
@@ -362,6 +414,18 @@ body::before {
   <div class="boot-tagline">tuning frequencies<span class="boot-dots"><span>.</span><span>.</span><span>.</span></span></div>
   <div class="boot-footer">streaming via soundcloud</div>
 </div>
+
+<nav class="menubar">
+  <div class="menubar-left">
+    <span class="menubar-logo">sohiradio.</span>
+    <a href="/" class="menubar-link active">radio</a>
+    <a href="#" class="menubar-link" aria-disabled="true">archive<span class="menubar-tag">soon</span></a>
+    <a href="#" class="menubar-link" aria-disabled="true">about<span class="menubar-tag">soon</span></a>
+  </div>
+  <div class="menubar-right">
+    <a href="https://soundcloud.com/sohiradio" target="_blank" rel="noopener" class="menubar-link">soundcloud ↗</a>
+  </div>
+</nav>
 
 <div class="window">
   <div class="titlebar">
