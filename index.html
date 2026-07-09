@@ -396,6 +396,26 @@ body::before {
   letter-spacing: 0.1em;
   opacity: 0.5;
 }
+.tap-cue {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: 28px;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  pointer-events: none;
+  z-index: 9000;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.tap-cue.visible { animation: tapCuePulse 2.2s ease-in-out infinite; }
+@keyframes tapCuePulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
 </style>
 </head>
 <body>
@@ -414,6 +434,8 @@ body::before {
   <div class="boot-tagline">tuning frequencies<span class="boot-dots"><span>.</span><span>.</span><span>.</span></span></div>
   <div class="boot-footer">streaming via soundcloud</div>
 </div>
+
+<div class="tap-cue" id="tapCue">tap anywhere to tune in</div>
 
 <nav class="menubar">
   <div class="menubar-left">
@@ -526,14 +548,14 @@ function setStreamSource(url, autoplay) {
   hlsRecoveries = 0;
   if (supportsNativeHls) {
     audioEl.src = url;
-    if (autoplay) audioEl.play().catch(() => {});
+    if (autoplay) audioEl.play().catch(showCueIfBlocked);
     return;
   }
   loadHlsJsIfNeeded(() => {
     if (!window.Hls || !window.Hls.isSupported()) {
       // Last-resort fallback — probably won't work, but don't just silently fail.
       audioEl.src = url;
-      if (autoplay) audioEl.play().catch(() => {});
+      if (autoplay) audioEl.play().catch(showCueIfBlocked);
       return;
     }
     if (hls) hls.destroy();
@@ -553,7 +575,7 @@ function setStreamSource(url, autoplay) {
     hls.attachMedia(audioEl);
     if (autoplay) {
       hls.once(window.Hls.Events.MANIFEST_PARSED, () => {
-        audioEl.play().catch(() => {});
+        audioEl.play().catch(showCueIfBlocked);
       });
     }
   });
@@ -919,16 +941,35 @@ visToggle.addEventListener('click', () => {
 
 /* ---------- AUTOPLAY FALLBACK ----------
    Mobile browsers block sound autoplay before any user interaction. We try
-   immediately once the queue loads; if that's blocked, the first tap/touch
-   anywhere on the page unlocks it. Fires once, never interferes with a
-   deliberate pause later. */
+   immediately once the queue loads; if that's blocked, a "tap anywhere to
+   tune in" cue appears and the first tap/touch anywhere on the page starts
+   playback. */
+const tapCue = document.getElementById('tapCue');
+function showTapCue() { tapCue.classList.add('visible'); }
+function hideTapCue() { tapCue.classList.remove('visible'); }
+
+/* NotAllowedError is specifically "gesture required" — other rejections
+   (e.g. a play() aborted by a rapid skip) shouldn't summon the cue. */
+function showCueIfBlocked(err) {
+  if (err && err.name === 'NotAllowedError') showTapCue();
+}
+
 function unlockAutoplay() {
   if (isPlaying || queue.length === 0) return;
+  hideTapCue();
   if (!hasStarted) playRandomTrack();
   else audioEl.play().catch(() => {});
 }
-document.addEventListener('touchstart', unlockAutoplay, { once: true, passive: true });
-document.addEventListener('click', unlockAutoplay, { once: true });
+/* Disarm on the first successful start, not on first tap: a tap during the
+   boot screen (before the queue exists) must not burn the listeners. After
+   playback has started once, taps must never resume a deliberate pause. */
+audioEl.addEventListener('playing', () => {
+  hideTapCue();
+  document.removeEventListener('touchstart', unlockAutoplay);
+  document.removeEventListener('click', unlockAutoplay);
+});
+document.addEventListener('touchstart', unlockAutoplay, { passive: true });
+document.addEventListener('click', unlockAutoplay);
 </script>
 
 </body>
