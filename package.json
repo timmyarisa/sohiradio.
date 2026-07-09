@@ -1,0 +1,8 @@
+{
+  "name": "sohiradio",
+  "private": true,
+  "description": "sohiradio — SoundCloud-backed web radio (static frontend + Netlify functions)",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  }
+}

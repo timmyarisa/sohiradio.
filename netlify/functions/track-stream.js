@@ -16,7 +16,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const token = await getAccessToken();
+    const token = await getAccessToken(event);
 
     // Track metadata (title, artist, artwork, etc.)
     const trackResp = await fetch(`https://api.soundcloud.com/tracks/${trackId}`, {

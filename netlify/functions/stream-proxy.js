@@ -19,7 +19,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const token = await getAccessToken();
+    const token = await getAccessToken(event);
     const upstream = await fetch(targetUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });

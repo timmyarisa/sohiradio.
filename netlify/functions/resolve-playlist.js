@@ -34,7 +34,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const token = await getAccessToken();
+    const token = await getAccessToken(event);
 
     const resolveResp = await fetch(
       `https://api.soundcloud.com/resolve?url=${encodeURIComponent(setUrl)}`,
