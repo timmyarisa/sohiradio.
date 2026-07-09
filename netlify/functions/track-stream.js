@@ -59,16 +59,19 @@ exports.handler = async (event) => {
     }
 
     const streams = await streamsResp.json();
-    // Prefer the higher-quality 160k AAC stream, fall back to 96k.
-    // These are already final, playable HLS manifest URLs — no extra
-    // resolution step needed (confirmed: fetching one directly returns
-    // real #EXTM3U playlist content, not a JSON wrapper).
-    const streamUrl = streams.hls_aac_160_url || streams.hls_aac_96_url;
+    // Prefer the higher-quality 160k AAC stream, fall back to 96k AAC,
+    // then MP3-HLS (some tracks are only transcoded to that). These are
+    // already final, playable HLS manifest URLs — no extra resolution
+    // step needed (confirmed: fetching one directly returns real #EXTM3U
+    // playlist content, not a JSON wrapper). preview_* streams are 30s
+    // teasers and never used.
+    const streamUrl =
+      streams.hls_aac_160_url || streams.hls_aac_96_url || streams.hls_mp3_128_url;
 
     if (!streamUrl) {
       return {
         statusCode: 404,
-        body: JSON.stringify({ error: "No playable AAC-HLS stream found for this track." }),
+        body: JSON.stringify({ error: "No full-length HLS stream found for this track." }),
       };
     }
 

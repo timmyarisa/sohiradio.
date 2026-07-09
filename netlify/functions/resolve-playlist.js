@@ -95,7 +95,10 @@ exports.handler = async (event) => {
           );
           if (streamsResp.ok) {
             const streams = await streamsResp.json();
-            const ok = !!(streams.hls_aac_160_url || streams.hls_aac_96_url);
+            // Any full HLS stream counts — AAC preferred, but some tracks
+            // only offer MP3-HLS. preview_* fields are 30s teasers and
+            // deliberately don't count.
+            const ok = !!(streams.hls_aac_160_url || streams.hls_aac_96_url || streams.hls_mp3_128_url);
             if (ok) return { track: t, playable: true, reason: null };
             // Diagnostics for blocked tracks: what does the API actually
             // offer for this track, and does the legacy per-track stream
