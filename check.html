@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>sohiradio — track check</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0A0A0A;
+  --panel: #141416;
+  --panel-2: #1C1C1F;
+  --panel-3: #232326;
+  --line: #2A2A2D;
+  --text: #F5F3EE;
+  --text-dim: #7A7A7E;
+  --glow: rgba(245, 243, 238, 0.18);
+}
+
+body {
+  background:
+    radial-gradient(ellipse 120% 80% at 50% -10%, rgba(255,255,255,0.05), transparent 60%),
+    var(--bg);
+  color: var(--text);
+  font-family: 'Space Grotesk', sans-serif;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.window {
+  width: 100%;
+  max-width: 520px;
+  background: linear-gradient(180deg, var(--panel-3), var(--panel) 40%);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  box-shadow: 0 40px 80px -20px rgba(0,0,0,0.7), 0 1px 0 rgba(255,255,255,0.04) inset;
+  overflow: hidden;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.titlebar a { color: var(--text-dim); text-decoration: none; }
+.titlebar a:hover { color: var(--text); }
+
+.content { padding: 26px 24px 24px; }
+
+h1 {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-weight: 700;
+  font-size: 24px;
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
+}
+.sub {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 22px;
+}
+
+.check-row { display: flex; gap: 8px; margin-bottom: 18px; }
+.check-input {
+  flex: 1;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 11px 12px;
+  border-radius: 2px;
+  min-width: 0;
+}
+.check-input::placeholder { color: var(--text-dim); }
+.check-input:focus { outline: none; border-color: rgba(245,243,238,0.35); }
+.check-btn {
+  background: var(--panel-3);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 18px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.check-btn:hover { border-color: rgba(245,243,238,0.35); box-shadow: 0 0 12px var(--glow); }
+.check-btn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+
+.result {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.015);
+  border-radius: 2px;
+  padding: 16px;
+  display: none;
+}
+.result.show { display: flex; gap: 14px; align-items: flex-start; }
+.result-art {
+  width: 64px; height: 64px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.result-info { flex: 1; min-width: 0; }
+.verdict {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 8px;
+}
+.verdict.ok { color: var(--text); }
+.verdict.no { color: var(--text-dim); }
+.result-title { font-weight: 500; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.result-artist { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.result-note { font-size: 12px; color: var(--text-dim); margin-top: 10px; line-height: 1.5; }
+.result-note a { color: var(--text); }
+
+.hint {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  margin-top: 16px;
+  line-height: 1.7;
+  opacity: 0.7;
+}
+
+@media (max-width: 480px) {
+  body { padding: 14px; }
+  .content { padding: 22px 18px 20px; }
+  .check-row { flex-direction: column; }
+  .check-btn { padding: 12px; }
+}
+</style>
+</head>
+<body>
+
+<div class="window">
+  <div class="titlebar">
+    <span>sohiradio.tools — track check</span>
+    <a href="/">← radio</a>
+  </div>
+  <div class="content">
+    <h1>will it stream?</h1>
+    <div class="sub">vet a track before adding it to the station</div>
+
+    <form class="check-row" id="checkForm">
+      <input class="check-input" id="urlInput" type="url" required
+             placeholder="https://soundcloud.com/artist/track" autocomplete="off">
+      <button class="check-btn" id="checkBtn" type="submit">check</button>
+    </form>
+
+    <div class="result" id="result">
+      <img class="result-art" id="resultArt" alt="" hidden>
+      <div class="result-info">
+        <div class="verdict" id="verdict"></div>
+        <div class="result-title" id="resultTitle"></div>
+        <div class="result-artist" id="resultArtist"></div>
+        <div class="result-note" id="resultNote"></div>
+      </div>
+    </div>
+
+    <div class="hint">
+      streamable tracks are usually artist self-uploads: demos, edits,
+      remixes, mixes. label releases mostly allow only 30s previews
+      off-platform — nothing any player can do about that.
+    </div>
+  </div>
+</div>
+
+<script>
+const form = document.getElementById('checkForm');
+const input = document.getElementById('urlInput');
+const btn = document.getElementById('checkBtn');
+const result = document.getElementById('result');
+const art = document.getElementById('resultArt');
+const verdict = document.getElementById('verdict');
+const title = document.getElementById('resultTitle');
+const artist = document.getElementById('resultArtist');
+const note = document.getElementById('resultNote');
+
+function show(v, vClass, t, a, n, artUrl) {
+  verdict.textContent = v;
+  verdict.className = 'verdict ' + vClass;
+  title.textContent = t || '';
+  artist.textContent = a || '';
+  note.innerHTML = n || '';
+  if (artUrl) { art.src = artUrl; art.hidden = false; } else { art.hidden = true; }
+  result.classList.add('show');
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = input.value.trim();
+  if (!url) return;
+  btn.disabled = true;
+  show('… checking', 'no', '', '', '');
+  try {
+    const resp = await fetch(`/.netlify/functions/check-track?url=${encodeURIComponent(url)}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      show('✗ can’t check', 'no', '', '', data.error || `request failed (${resp.status})`);
+      return;
+    }
+    const mins = Math.floor(data.durationMs / 60000);
+    const secs = Math.floor((data.durationMs % 60000) / 1000).toString().padStart(2, '0');
+    if (data.playable) {
+      show(`● will stream — ${data.quality}`, 'ok', data.title, `${data.artist} · ${mins}:${secs}`,
+        'add it to the playlist and it joins the rotation within ~10 minutes.',
+        data.artworkUrl);
+    } else {
+      show('✕ won’t stream', 'no', data.title, `${data.artist} · ${mins}:${secs}`,
+        data.reason || '', data.artworkUrl);
+    }
+  } catch (err) {
+    show('✗ can’t check', 'no', '', '', err.message || 'network error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>
