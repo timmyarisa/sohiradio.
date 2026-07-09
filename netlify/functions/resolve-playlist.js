@@ -96,7 +96,27 @@ exports.handler = async (event) => {
           if (streamsResp.ok) {
             const streams = await streamsResp.json();
             const ok = !!(streams.hls_aac_160_url || streams.hls_aac_96_url);
-            return { track: t, playable: ok, reason: ok ? null : "no-hls-stream" };
+            if (ok) return { track: t, playable: true, reason: null };
+            // Diagnostics for blocked tracks: what does the API actually
+            // offer for this track, and does the legacy per-track stream
+            // endpoint still serve anything? (302 = it would redirect to
+            // playable audio.) Helps tell "rights-holder blocked" apart
+            // from "playable via a format we don't request yet".
+            let legacyStatus = null;
+            try {
+              const legacyResp = await fetch(
+                `https://api.soundcloud.com/tracks/${t.id}/stream`,
+                { headers: { Authorization: `Bearer ${token}` }, redirect: "manual" }
+              );
+              legacyStatus = legacyResp.status;
+            } catch (e) {}
+            return {
+              track: t,
+              playable: false,
+              reason: "no-hls-stream",
+              streamKeys: Object.keys(streams),
+              legacyStreamStatus: legacyStatus,
+            };
           }
           if ((streamsResp.status === 429 || streamsResp.status >= 500) && attempt === 0) {
             await new Promise((r) => setTimeout(r, 600));
@@ -129,7 +149,13 @@ exports.handler = async (event) => {
     const playableTracks = candidates.filter((t) => playableIds.has(t.id));
     for (const r of results) {
       if (!r.playable) {
-        excluded.push({ id: r.track.id, title: r.track.title || "untitled", reason: r.reason });
+        excluded.push({
+          id: r.track.id,
+          title: r.track.title || "untitled",
+          reason: r.reason,
+          streamKeys: r.streamKeys || undefined,
+          legacyStreamStatus: r.legacyStreamStatus ?? undefined,
+        });
       }
     }
 
