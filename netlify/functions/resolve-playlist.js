@@ -72,30 +72,66 @@ exports.handler = async (event) => {
 
     const allTracks = [...fullTracks, ...fetchedStubs];
     const candidates = allTracks.filter((t) => t.streamable !== false);
+    const excluded = allTracks
+      .filter((t) => t.streamable === false)
+      .map((t) => ({ id: t.id, title: t.title || "untitled", reason: "owner-blocked" }));
 
-    // Check each candidate's actual stream availability up front, in
-    // parallel, so the returned queue only ever contains tracks that will
-    // really play — instead of finding out (and skipping visibly) at
-    // playback time. Not every track has been transcoded to SoundCloud's
-    // current AAC-HLS format yet, especially older uploads.
-    const checked = await Promise.all(
-      candidates.map(async (t) => {
+    // Check each candidate's actual stream availability up front, so the
+    // returned queue only ever contains tracks that will really play —
+    // instead of finding out (and skipping visibly) at playback time. Not
+    // every track has been transcoded to SoundCloud's current AAC-HLS
+    // format yet, especially older uploads.
+    //
+    // Deliberately NOT all in parallel: firing dozens of simultaneous
+    // calls gets some of them rate-limited (429), which made playable
+    // tracks randomly vanish from the queue. Limited concurrency plus one
+    // retry keeps the result stable.
+    async function checkTrack(t) {
+      for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const streamsResp = await fetch(
             `https://api.soundcloud.com/tracks/${t.id}/streams`,
             { headers: { Authorization: `Bearer ${token}` } }
           );
-          if (!streamsResp.ok) return null;
-          const streams = await streamsResp.json();
-          const hasStream = !!(streams.hls_aac_160_url || streams.hls_aac_96_url);
-          return hasStream ? t : null;
+          if (streamsResp.ok) {
+            const streams = await streamsResp.json();
+            const ok = !!(streams.hls_aac_160_url || streams.hls_aac_96_url);
+            return { track: t, playable: ok, reason: ok ? null : "no-hls-stream" };
+          }
+          if ((streamsResp.status === 429 || streamsResp.status >= 500) && attempt === 0) {
+            await new Promise((r) => setTimeout(r, 600));
+            continue;
+          }
+          return { track: t, playable: false, reason: `streams-endpoint-${streamsResp.status}` };
         } catch (e) {
-          return null;
+          if (attempt === 0) continue;
+          return { track: t, playable: false, reason: "streams-endpoint-unreachable" };
+        }
+      }
+      return { track: t, playable: false, reason: "streams-endpoint-unreachable" };
+    }
+
+    const CONCURRENCY = 5;
+    const pending = [...candidates];
+    const results = [];
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, pending.length) }, async () => {
+        while (pending.length > 0) {
+          results.push(await checkTrack(pending.shift()));
         }
       })
     );
 
-    const playableTracks = checked.filter(Boolean);
+    const playableIds = new Set(
+      results.filter((r) => r.playable).map((r) => r.track.id)
+    );
+    // Filter the original list (not the pool results) to keep playlist order.
+    const playableTracks = candidates.filter((t) => playableIds.has(t.id));
+    for (const r of results) {
+      if (!r.playable) {
+        excluded.push({ id: r.track.id, title: r.track.title || "untitled", reason: r.reason });
+      }
+    }
 
     const tracks = playableTracks.map((t) => ({
       id: t.id,
@@ -112,7 +148,8 @@ exports.handler = async (event) => {
     const responseData = {
       playlistTitle: playlist.title || "sohiradio",
       tracks,
-      totalInPlaylist: candidates.length,
+      excluded,
+      totalInPlaylist: allTracks.length,
       playableCount: tracks.length,
     };
 

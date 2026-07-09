@@ -520,6 +520,7 @@ function loadHlsJsIfNeeded(callback) {
 }
 
 function setStreamSource(url, autoplay) {
+  hlsRecoveries = 0;
   if (supportsNativeHls) {
     audioEl.src = url;
     if (autoplay) audioEl.play().catch(() => {});
@@ -534,6 +535,17 @@ function setStreamSource(url, autoplay) {
     }
     if (hls) hls.destroy();
     hls = new window.Hls();
+    hls.on(window.Hls.Events.ERROR, (evt, data) => {
+      if (!data.fatal) return;
+      // Try hls.js's own in-place recovery a couple of times before
+      // declaring the track dead and skipping.
+      if (hlsRecoveries < 2) {
+        hlsRecoveries++;
+        if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) { hls.startLoad(); return; }
+        if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) { hls.recoverMediaError(); return; }
+      }
+      handlePlaybackError(`hls fatal: ${data.type}/${data.details}`);
+    });
     hls.loadSource(url);
     hls.attachMedia(audioEl);
     if (autoplay) {
@@ -560,6 +572,25 @@ let currentTrack = null; // full details of the currently loaded track
 let currentPermalinkUrl = "";
 let history = [];        // stack of previously played track ids
 const MAX_HISTORY = 20;
+let failureStreak = 0;   // consecutive tracks that failed to load or play
+let hlsRecoveries = 0;   // in-track hls.js recovery attempts
+
+/* A track died mid-flight (network drop, expired segment URL, decode
+   problem). Move on to another one instead of stopping silently, unless
+   several tracks in a row have failed — then stand by and let the user
+   retry. */
+function handlePlaybackError(context) {
+  console.warn("playback error:", context);
+  if (!hasStarted || queue.length === 0) return;
+  failureStreak++;
+  if (failureStreak >= Math.min(queue.length, 5)) {
+    npTitle.textContent = "stream trouble — tap play to retry";
+    npLabel.textContent = 'STANDBY';
+    failureStreak = 0;
+    return;
+  }
+  loadAndPlayTrack(pickNextTrackId(), true);
+}
 
 npTitle.textContent = "loading playlist...";
 
@@ -590,24 +621,41 @@ async function loadQueue() {
 }
 loadQueue();
 
-function pickNextTrackId(excludeId) {
-  if (queue.length === 1) return queue[0].id;
-  let pick = queue[Math.floor(Math.random() * queue.length)];
-  while (pick.id === excludeId) pick = queue[Math.floor(Math.random() * queue.length)];
-  return pick.id;
+/* Shuffle bag: play every track once, in random order, before anything
+   repeats. Refill + reshuffle when the bag empties; never let a new cycle
+   open with the track that just finished. */
+let shuffleBag = [];
+function pickNextTrackId() {
+  if (shuffleBag.length === 0) {
+    shuffleBag = queue.map((t) => t.id);
+    for (let i = shuffleBag.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffleBag[i], shuffleBag[j]] = [shuffleBag[j], shuffleBag[i]];
+    }
+    if (shuffleBag.length > 1 && currentTrack && shuffleBag[0] === currentTrack.id) {
+      shuffleBag.push(shuffleBag.shift());
+    }
+  }
+  return shuffleBag.shift();
 }
 
+let loadSeq = 0; // guards against rapid skips resolving out of order
 async function loadAndPlayTrack(trackId, attemptPlay) {
+  const seq = ++loadSeq;
   npLabel.textContent = 'CONNECTING';
   npTitle.textContent = "tuning in...";
   try {
     const resp = await fetch(`/.netlify/functions/track-stream?id=${trackId}`);
+    if (seq !== loadSeq) return; // a newer selection superseded this one
     if (!resp.ok) {
       const errBody = await resp.json().catch(() => ({}));
       throw new Error(errBody.error || `track-stream failed: ${resp.status}`);
     }
     const data = await resp.json();
-    currentTrack = data;
+    if (seq !== loadSeq) return;
+    // The response may not carry an id, so keep the one we requested —
+    // history and shuffle both depend on currentTrack.id existing.
+    currentTrack = Object.assign({ id: Number(trackId) }, data);
     currentPermalinkUrl = data.permalinkUrl || "";
 
     npTitle.textContent = data.title;
@@ -617,21 +665,27 @@ async function loadAndPlayTrack(trackId, attemptPlay) {
     const proxiedUrl = `/.netlify/functions/stream-proxy?url=${encodeURIComponent(data.streamUrl)}`;
     setStreamSource(proxiedUrl, attemptPlay);
   } catch (err) {
+    if (seq !== loadSeq) return;
     console.error(err);
     npTitle.textContent = "couldn't play this track";
     npArtist.textContent = err.message || "";
     npLabel.textContent = 'STANDBY';
-    // Try a different track rather than getting stuck on one that failed.
-    if (queue.length > 1) {
-      setTimeout(() => loadAndPlayTrack(pickNextTrackId(trackId), attemptPlay), 800);
+    // Try a different track rather than getting stuck on one that failed —
+    // but give up after a few strikes so two dead tracks can't ping-pong
+    // requests forever.
+    failureStreak++;
+    if (queue.length > 1 && failureStreak < Math.min(queue.length, 5)) {
+      setTimeout(() => loadAndPlayTrack(pickNextTrackId(), attemptPlay), 800);
+    } else {
+      npTitle.textContent = "stream trouble — tap play to retry";
+      failureStreak = 0;
     }
   }
 }
 
 function playRandomTrack() {
   hasStarted = true;
-  const id = pickNextTrackId(currentTrack ? currentTrack.id : null);
-  loadAndPlayTrack(id, true);
+  loadAndPlayTrack(pickNextTrackId(), true);
 }
 
 function tryAutoplay() {
@@ -661,18 +715,22 @@ if ('mediaSession' in navigator) {
 
 function nextTrack() {
   if (queue.length === 0) return;
-  if (currentTrack) {
+  if (currentTrack && currentTrack.id != null && !isNaN(currentTrack.id)) {
     history.push(currentTrack.id);
     if (history.length > MAX_HISTORY) history.shift();
   }
-  const id = pickNextTrackId(currentTrack ? currentTrack.id : null);
-  loadAndPlayTrack(id, isPlaying || !hasStarted);
+  loadAndPlayTrack(pickNextTrackId(), isPlaying || !hasStarted);
 }
 
 function previousTrack() {
-  if (history.length === 0) return;
-  const id = history.pop();
-  loadAndPlayTrack(id, isPlaying || !hasStarted);
+  // Skip over any unusable entries (older sessions could store undefined).
+  while (history.length > 0) {
+    const id = history.pop();
+    if (id != null && !isNaN(id)) {
+      loadAndPlayTrack(id, isPlaying || !hasStarted);
+      return;
+    }
+  }
 }
 
 function formatTime(s) {
@@ -698,6 +756,13 @@ setPlayingUI(false);
 audioEl.addEventListener('play', () => setPlayingUI(true));
 audioEl.addEventListener('pause', () => setPlayingUI(false));
 audioEl.addEventListener('ended', () => nextTrack());
+audioEl.addEventListener('playing', () => { failureStreak = 0; });
+// Native HLS playback (Safari) surfaces failures on the element itself;
+// in hls.js mode errors arrive via the Hls ERROR event instead.
+audioEl.addEventListener('error', () => {
+  if (!supportsNativeHls) return;
+  handlePlaybackError(`media element error: ${audioEl.error && audioEl.error.code}`);
+});
 audioEl.addEventListener('timeupdate', () => {
   curTime.textContent = formatTime(audioEl.currentTime);
   if (isFinite(audioEl.duration)) durTime.textContent = formatTime(audioEl.duration);

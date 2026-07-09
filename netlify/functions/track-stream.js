@@ -76,6 +76,7 @@ exports.handler = async (event) => {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        id: track.id,
         streamUrl,
         protocol: "hls",
         title: track.title,
