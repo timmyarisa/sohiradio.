@@ -784,8 +784,12 @@ function applyMediaSessionHandlers() {
   if (!('mediaSession' in navigator)) return;
   const ms = navigator.mediaSession;
   try {
-    ms.setActionHandler('play', () => startOrToggle(true));
-    ms.setActionHandler('pause', () => startOrToggle(false));
+    // Flip playbackState optimistically: the lock screen button waits for
+    // it, and in a backgrounded (throttled) page the element's own
+    // play/pause events can take a beat to round-trip. setPlayingUI still
+    // settles the real state right after.
+    ms.setActionHandler('play', () => { ms.playbackState = 'playing'; startOrToggle(true); });
+    ms.setActionHandler('pause', () => { ms.playbackState = 'paused'; startOrToggle(false); });
     ms.setActionHandler('previoustrack', () => previousTrack());
     ms.setActionHandler('nexttrack', () => nextTrack());
   } catch (e) {}
