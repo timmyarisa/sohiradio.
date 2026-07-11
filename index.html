@@ -550,6 +550,67 @@ const STATION_ID_SET_URL = "https://soundcloud.com/sohiradio/sets/station-ids/s-
 const audioEl = document.getElementById('audioEl');
 audioEl.setAttribute('crossorigin', 'anonymous');
 
+/* Claim a real media-app audio session where supported (iOS/Safari 17+).
+   This is the same AVAudioSession machinery native music apps use: audio
+   plays through the ring/silent switch, and the session state tells us
+   when a call/Siri interruption ENDS so we can resume like Spotify does. */
+try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+
+/* iOS ignores element volume (locked to 1) — and some versions *report*
+   the value you set while ignoring it audibly, so pair the readback probe
+   with a device check. Where volume isn't ours, fades become instant
+   pause/play rather than a silent 220ms delay. */
+const isIOSDevice = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+  (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform)); // iPadOS masquerades as Mac
+let volumeControllable = false;
+try {
+  audioEl.volume = 0.5;
+  volumeControllable = !isIOSDevice && Math.abs(audioEl.volume - 0.5) < 0.01;
+  audioEl.volume = 1;
+} catch (e) {}
+
+/* Spotify-style micro-fade on pause/resume: softens the hard edge instead
+   of chopping the waveform. No-op where volume is uncontrollable. */
+const FADE_MS = 220;
+let fadeTimer = null;
+function cancelFade() {
+  if (fadeTimer) { clearInterval(fadeTimer); fadeTimer = null; }
+  if (volumeControllable) audioEl.volume = 1;
+}
+function fadeTo(target, done) {
+  if (fadeTimer) { clearInterval(fadeTimer); fadeTimer = null; }
+  if (!volumeControllable) { if (done) done(); return; }
+  const start = audioEl.volume;
+  const steps = Math.max(1, Math.round(FADE_MS / 25));
+  let n = 0;
+  fadeTimer = setInterval(() => {
+    n++;
+    audioEl.volume = start + (target - start) * (n / steps);
+    if (n >= steps) {
+      clearInterval(fadeTimer);
+      fadeTimer = null;
+      if (done) done();
+    }
+  }, 25);
+}
+function pauseWithFade() {
+  if (audioEl.paused) return;
+  fadeTo(0, () => {
+    userPauseIntent = true;
+    audioEl.pause();
+    if (volumeControllable) audioEl.volume = 1; // silent while paused; ready for resume
+  });
+}
+function playWithFade() {
+  if (volumeControllable && audioEl.paused) audioEl.volume = 0;
+  audioEl.play().then(() => {
+    fadeTo(1);
+  }).catch((err) => {
+    cancelFade();
+    showCueIfBlocked(err);
+  });
+}
+
 // Safari (desktop + iOS) supports HLS natively. Every other browser
 // (Chrome, Arc, Firefox, Edge) needs hls.js to play .m3u8 streams at all.
 const supportsNativeHls = audioEl.canPlayType('application/vnd.apple.mpegurl') !== '';
@@ -569,6 +630,7 @@ function loadHlsJsIfNeeded(callback) {
 
 function setStreamSource(url, autoplay) {
   hlsRecoveries = 0;
+  cancelFade(); // a fade belonging to the previous track must not pause this one
   if (supportsNativeHls) {
     audioEl.src = url;
     if (autoplay) audioEl.play().catch(showCueIfBlocked);
@@ -622,19 +684,41 @@ let currentIsStationId = false;
 let gapCounted = false;  // current track already counted toward the ID gap
 let currentPermalinkUrl = "";
 let history = [];        // stack of previously played track ids (songs only)
+let forwardStack = [];   // ids we prev'd out of; next/auto-advance retrace them
 const MAX_HISTORY = 20;
 let bootTapped = false;      // entry tap happened (possibly before ready)
 let bootReady = false;       // boot preload settled; the entry tap starts music
 let failureStreak = 0;   // consecutive tracks that failed to load or play
 let hlsRecoveries = 0;   // in-track hls.js recovery attempts
+let userPauseIntent = false;   // the next pause event is the listener's own doing
+let systemInterrupted = false; // paused by a call/Siri/route change, not the user
+let interruptedAt = 0;
+let offlineHold = null;  // { at } — track position parked while offline
 
 /* A track died mid-flight (network drop, expired segment URL, decode
-   problem). Move on to another one instead of stopping silently, unless
-   several tracks in a row have failed — then stand by and let the user
-   retry. */
+   problem). librespot re-requests the failed ranges instead of abandoning
+   the track, so first try the same thing: re-resolve this track's stream
+   once and pick up where it stopped. If that fails too (no successful
+   playback in between resets the attempt), move on to another track —
+   unless several in a row have failed, then stand by for a manual retry. */
+let resumeAttempted = false;
 function handlePlaybackError(context) {
   console.warn("playback error:", context);
   if (!hasStarted || queue.length === 0) return;
+  // No network at all — nothing to skip to either. Park the position and
+  // let the 'online' listener revive this same track when connectivity
+  // returns, instead of churning through the whole failure budget.
+  if (navigator.onLine === false) {
+    npLabel.textContent = 'RECONNECTING';
+    offlineHold = { at: audioEl.currentTime };
+    return;
+  }
+  const resumeAt = audioEl.currentTime;
+  if (!resumeAttempted && currentTrack && currentTrack.id != null && resumeAt > 1) {
+    resumeAttempted = true;
+    resumeCurrentTrackAt(resumeAt);
+    return;
+  }
   failureStreak++;
   if (failureStreak >= Math.min(queue.length, 5)) {
     npTitle.textContent = "stream trouble — tap play to retry";
@@ -644,6 +728,36 @@ function handlePlaybackError(context) {
   }
   const pick = pickNext();
   loadAndPlayTrack(pick.id, true, pick.isStationId);
+}
+
+/* Fetch a fresh stream URL for the track that just died and seek back to
+   where it stopped — the listener keeps their song across network blips. */
+async function resumeCurrentTrackAt(positionSec) {
+  const trackId = currentTrack.id;
+  const isId = currentIsStationId;
+  const wasCounted = gapCounted;
+  const seq = ++loadSeq;
+  try {
+    const resp = await fetch(`/.netlify/functions/track-stream?id=${trackId}`);
+    if (seq !== loadSeq) return; // a newer selection superseded the resume
+    if (!resp.ok) throw new Error(`track-stream failed: ${resp.status}`);
+    const data = await resp.json();
+    if (seq !== loadSeq) return;
+    applyLoadedTrack(trackId, data, true, isId);
+    gapCounted = wasCounted; // same play — don't let it count twice
+    audioEl.addEventListener('loadedmetadata', () => {
+      if (seq !== loadSeq) return;
+      if (isFinite(audioEl.duration)) {
+        positionSec = Math.min(positionSec, Math.max(0, audioEl.duration - 1));
+      }
+      audioEl.currentTime = positionSec;
+      updatePositionState();
+    }, { once: true });
+  } catch (err) {
+    if (seq !== loadSeq) return;
+    console.warn("in-place resume failed:", err);
+    handlePlaybackError("resume refetch failed");
+  }
 }
 
 npTitle.textContent = "loading playlist...";
@@ -667,6 +781,17 @@ async function loadQueue() {
     queue = (data.tracks || []).filter((t) => t.streamable);
     if (queue.length === 0) throw new Error("Playlist resolved but has no streamable tracks.");
     loadIdQueue();
+    // Restore transport continuity from the last session: prev history,
+    // the forward trail, and where the station-ID cadence left off.
+    const saved = loadSession();
+    if (saved) {
+      const valid = (id) => id != null && !isNaN(id);
+      if (Array.isArray(saved.history)) history = saved.history.filter(valid).slice(-MAX_HISTORY);
+      if (Array.isArray(saved.forwardStack)) forwardStack = saved.forwardStack.filter(valid).slice(-MAX_HISTORY);
+      if (Number.isFinite(saved.songsUntilStationId)) {
+        songsUntilStationId = Math.max(0, Math.min(STATION_ID_MAX_GAP, saved.songsUntilStationId));
+      }
+    }
     // The boot screen is the entry gate: it stays up until the visitor
     // taps, and the tap cue only appears once the first track is loaded
     // and ready to sound immediately.
@@ -702,9 +827,17 @@ function setBootCueReady() {
 
 /* Load the first track's stream while the boot screen is still up, so the
    entry tap goes straight to play() with the source already in place —
-   no post-tap fetches, no silent gap. */
+   no post-tap fetches, no silent gap. Reopens like Spotify: the song the
+   listener left, at the position they left it. Only songs restore — a
+   session closed during a station ID starts on a fresh pick instead. */
 async function preloadFirstTrack() {
-  const pick = pickNext();
+  const saved = loadSession();
+  const resumable = saved && saved.trackId != null &&
+    queue.some((t) => t.id === saved.trackId);
+  const pick = resumable
+    ? { id: saved.trackId, isStationId: false }
+    : pickNext();
+  const resumePos = resumable && Number.isFinite(saved.pos) && saved.pos > 5 ? saved.pos : 0;
   try {
     const resp = await fetch(`/.netlify/functions/track-stream?id=${pick.id}`);
     if (!resp.ok) throw new Error(`track-stream failed: ${resp.status}`);
@@ -719,6 +852,16 @@ async function preloadFirstTrack() {
     } else {
       applyLoadedTrack(pick.id, data, false, pick.isStationId);
       setBootCueReady();
+    }
+    if (resumePos) {
+      audioEl.addEventListener('loadedmetadata', () => {
+        let p = resumePos;
+        if (isFinite(audioEl.duration)) p = Math.min(p, Math.max(0, audioEl.duration - 2));
+        audioEl.currentTime = p;
+        // The song already earned its station-ID count last session.
+        if (p >= GAP_COUNT_AT_SEC) gapCounted = true;
+        updatePositionState();
+      }, { once: true });
     }
   } catch (err) {
     console.error("first-track preload failed:", err);
@@ -820,20 +963,39 @@ function applyLoadedTrack(trackId, data, attemptPlay, isStationId) {
    audibly playing (so iOS keeps it alive for the fetch) and channel-
    surfing past a track no longer burns a prefetch. */
 const PREFETCH_BEFORE_END_SEC = 30;
-let nextUp = null; // { id, data, isStationId }
+let nextUp = null; // { id, data, isStationId, fromForward }
 let prefetchInFlight = false;
 async function prefetchNextTrack() {
   if (nextUp || prefetchInFlight || queue.length < 2) return;
   prefetchInFlight = true;
   try {
-    const pick = pickNext();
+    // Retracing tracks we prev'd out of takes priority over a fresh pick.
+    const pick = forwardStack.length > 0
+      ? { id: forwardStack[forwardStack.length - 1], isStationId: false, fromForward: true }
+      : pickNext();
     const resp = await fetch(`/.netlify/functions/track-stream?id=${pick.id}`);
     if (resp.ok) {
       const data = await resp.json();
-      nextUp = { id: pick.id, data, isStationId: pick.isStationId };
+      nextUp = { id: pick.id, data, isStationId: pick.isStationId, fromForward: !!pick.fromForward };
     }
     // On failure nextUp stays null; nextTrack() falls back to fetching.
   } catch (e) {} finally { prefetchInFlight = false; }
+}
+
+/* Drop a prefetched-but-no-longer-next pick, returning it to the bag it
+   was drawn from so nothing silently vanishes from a shuffle cycle.
+   (Forward-stack picks weren't drawn from a bag — just let them go.) */
+function discardNextUp() {
+  if (!nextUp) return;
+  if (!nextUp.fromForward) {
+    if (nextUp.isStationId) {
+      idShuffleBag.unshift(nextUp.id);
+      songsUntilStationId = 0; // the gap already reset when this ID was picked
+    } else {
+      shuffleBag.unshift(nextUp.id);
+    }
+  }
+  nextUp = null;
 }
 
 let loadSeq = 0; // guards against rapid skips resolving out of order
@@ -924,6 +1086,7 @@ applyMediaSessionHandlers();
 
 /* Feed the lock screen a live position so it can render a progress bar. */
 let lastPositionUpdate = 0;
+let lastSessionSave = 0;
 function updatePositionState() {
   if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
   if (!isFinite(audioEl.duration) || audioEl.duration <= 0) return;
@@ -948,6 +1111,22 @@ function nextTrack(forcePlay) {
   // right before 'ended', so isPlaying is already false by the time we
   // get here even though the radio should absolutely keep going.
   const shouldPlay = forcePlay || isPlaying || !hasStarted;
+  // After prev, forward moves (button or auto-advance) retrace the tracks
+  // we backed out of before the radio draws anything new — Spotify walks
+  // its queue the same way.
+  if (forwardStack.length > 0) {
+    const id = forwardStack.pop();
+    if (nextUp && nextUp.fromForward && nextUp.id === id) {
+      const up = nextUp;
+      nextUp = null;
+      loadSeq++; // invalidate any older in-flight loads
+      applyLoadedTrack(up.id, up.data, shouldPlay, false);
+    } else {
+      discardNextUp(); // prefetched for a different position in the stream
+      loadAndPlayTrack(id, shouldPlay, false);
+    }
+    return;
+  }
   if (nextUp) {
     const up = nextUp;
     nextUp = null;
@@ -959,16 +1138,37 @@ function nextTrack(forcePlay) {
   }
 }
 
+/* Spotify's prev rule (librespot spirc handle_prev): more than 3s into a
+   track, prev restarts it — a seek to 0, instant, no network, play/pause
+   status untouched. Under 3s it goes back for real. With nothing to go
+   back to, it restarts too. */
+const PREV_RESTART_THRESHOLD_SEC = 3;
 function previousTrack() {
   if (currentIsStationId) return; // IDs always play out
+  if (audioEl.currentTime > PREV_RESTART_THRESHOLD_SEC) {
+    audioEl.currentTime = 0;
+    updatePositionState();
+    return;
+  }
   // Skip over any unusable entries (older sessions could store undefined).
   while (history.length > 0) {
     const id = history.pop();
     if (id != null && !isNaN(id)) {
+      // Leave a trail forward so next/auto-advance return through the
+      // tracks we backed out of instead of drawing new random ones.
+      if (currentTrack && currentTrack.id != null && !isNaN(currentTrack.id)) {
+        forwardStack.push(currentTrack.id);
+        if (forwardStack.length > MAX_HISTORY) forwardStack.shift();
+      }
+      // Whatever was prefetched belongs after the track we just left, not
+      // after the one we're going back to — re-prefetch from here.
+      discardNextUp();
       loadAndPlayTrack(id, isPlaying || !hasStarted, false);
       return;
     }
   }
+  audioEl.currentTime = 0;
+  updatePositionState();
 }
 
 function formatTime(s) {
@@ -992,12 +1192,31 @@ function setPlayingUI(playing) {
 setPlayingUI(false);
 
 audioEl.addEventListener('play', () => setPlayingUI(true));
-audioEl.addEventListener('pause', () => setPlayingUI(false));
+audioEl.addEventListener('pause', () => {
+  setPlayingUI(false);
+  saveSession();
+  if (userPauseIntent) {
+    // The listener chose this pause — it must never auto-resume.
+    userPauseIntent = false;
+    systemInterrupted = false;
+    return;
+  }
+  if (!hasStarted || audioEl.ended ||
+      (isFinite(audioEl.duration) && audioEl.duration - audioEl.currentTime < 0.5)) return;
+  // Paused by the system: a call, Siri, Bluetooth/headphones dropping, iOS
+  // reclaiming audio. Native music apps resume when the interruption ends —
+  // remember it so we can do the same.
+  systemInterrupted = true;
+  interruptedAt = Date.now();
+});
 // Before hasStarted the only thing that can end is the ~2ms silent unlock
 // blip — advancing on it would race the boot preload with a second load.
 audioEl.addEventListener('ended', () => { if (hasStarted) nextTrack(true); });
 audioEl.addEventListener('playing', () => {
   failureStreak = 0;
+  resumeAttempted = false; // real playback again — earn back one resume
+  systemInterrupted = false;
+  offlineHold = null;
   applyMediaSessionHandlers();
   updatePositionState();
 });
@@ -1033,12 +1252,22 @@ audioEl.addEventListener('timeupdate', () => {
     lastPositionUpdate = now;
     updatePositionState();
   }
+  // Checkpoint the session every ~10s so a killed tab reopens mid-song.
+  if (now - lastSessionSave > 10000) {
+    lastSessionSave = now;
+    saveSession();
+  }
 });
 
 function startOrToggle(forcePlay) {
   if (queue.length === 0) return;
   if (!hasStarted && forcePlay) { playRandomTrack(); return; }
-  if (forcePlay) audioEl.play().catch(() => {}); else audioEl.pause();
+  if (forcePlay) {
+    systemInterrupted = false;
+    playWithFade();
+  } else {
+    pauseWithFade();
+  }
 }
 
 playTile.addEventListener('click', () => startOrToggle(true));
@@ -1049,6 +1278,94 @@ document.getElementById('skipBtn').addEventListener('click', () => nextTrack());
 document.getElementById('soundcloudLinkBtn').addEventListener('click', () => {
   if (currentPermalinkUrl) window.open(currentPermalinkUrl, '_blank');
 });
+
+/* ---------- INTERRUPTION RECOVERY ----------
+   A system pause (call, Siri, Bluetooth dropping) should end the way it
+   does in Spotify: playback comes back on its own the moment the world
+   does. A deliberate user pause never auto-resumes. */
+const INTERRUPT_RESUME_WINDOW_MS = 30 * 60 * 1000;
+function tryResumeAfterInterruption() {
+  // Offline hold outranks everything: the stream is dead, play() won't fix
+  // it — refetch the same track at the parked position instead.
+  if (offlineHold && navigator.onLine !== false && currentTrack) {
+    const hold = offlineHold;
+    offlineHold = null;
+    resumeAttempted = false;
+    resumeCurrentTrackAt(hold.at);
+    return;
+  }
+  if (!systemInterrupted || !hasStarted || !audioEl.paused) return;
+  if (Date.now() - interruptedAt > INTERRUPT_RESUME_WINDOW_MS) {
+    systemInterrupted = false; // too long ago — treat it like a real pause
+    return;
+  }
+  playWithFade(); // rejection is fine; the next trigger tries again
+}
+// The audio session flips back to 'active' when a call/Siri ends — the
+// exact signal native apps resume on.
+try {
+  if (navigator.audioSession) {
+    navigator.audioSession.addEventListener('statechange', () => {
+      if (navigator.audioSession.state === 'active') tryResumeAfterInterruption();
+    });
+  }
+} catch (e) {}
+// Audio outputs changed — Bluetooth/AirPods reconnecting mid-interruption.
+try {
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', () => tryResumeAfterInterruption());
+  }
+} catch (e) {}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) tryResumeAfterInterruption();
+});
+window.addEventListener('focus', () => tryResumeAfterInterruption());
+window.addEventListener('online', () => tryResumeAfterInterruption());
+
+/* Stall watchdog: native HLS (and occasionally hls.js) can hang forever on
+   a network transition — wifi dropping to cellular in the car — without
+   ever firing an error. If the UI says playing but the playhead hasn't
+   moved in 10s, treat it as a stream death; the in-place resume machinery
+   brings the same track back at the same position. */
+const STALL_TIMEOUT_MS = 10000;
+let lastProgressPos = -1;
+let lastProgressAt = 0;
+setInterval(() => {
+  if (!isPlaying || !hasStarted || audioEl.paused || offlineHold) { lastProgressPos = -1; return; }
+  if (audioEl.currentTime !== lastProgressPos) {
+    lastProgressPos = audioEl.currentTime;
+    lastProgressAt = Date.now();
+    return;
+  }
+  if (Date.now() - lastProgressAt > STALL_TIMEOUT_MS) {
+    lastProgressPos = -1;
+    handlePlaybackError('stall watchdog: playhead frozen');
+  }
+}, 2000);
+
+/* ---------- SESSION CONTINUITY ----------
+   Spotify reopens on the song you left, at the position you left it,
+   paused and ready. Persist just enough to do the same. Station IDs are
+   never a landing spot: a session that closed during one restores to a
+   fresh pick instead (the ID pool has its own rules). */
+const STATE_KEY = 'sohiradio.state.v1';
+function saveSession() {
+  if (!hasStarted || !currentTrack) return;
+  try {
+    localStorage.setItem(STATE_KEY, JSON.stringify({
+      trackId: currentIsStationId ? null : currentTrack.id,
+      pos: currentIsStationId ? 0 : audioEl.currentTime,
+      at: Date.now(),
+      history: history.slice(-MAX_HISTORY),
+      forwardStack: forwardStack.slice(-MAX_HISTORY),
+      songsUntilStationId: songsUntilStationId,
+    }));
+  } catch (e) {}
+}
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(STATE_KEY) || 'null'); } catch (e) { return null; }
+}
+window.addEventListener('pagehide', saveSession);
 
 /* ---------- AIRPLAY ----------
    Safari (macOS + iOS) can route the <audio> element's output to AirPlay
