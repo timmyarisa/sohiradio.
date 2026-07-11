@@ -315,6 +315,10 @@ body::before {
 .icon-btn:hover { color: var(--text); }
 .icon-btn svg { width: 15px; height: 15px; }
 
+/* AirPlay: hidden unless the browser reports a routable target nearby */
+#airplayBtn { display: none; }
+#airplayBtn.available { display: flex; }
+
 @media (max-width: 480px) {
   body { padding: 0; padding-top: 38px; align-items: stretch; }
   .window { max-width: 100%; min-height: calc(100vh - 38px); min-height: calc(100dvh - 38px); justify-content: space-between; }
@@ -519,6 +523,9 @@ body::before {
         </button>
         <button class="icon-btn" id="skipBtn" title="next track">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5v14l8-7-8-7zM16 5v14h2V5h-2z"/></svg>
+        </button>
+        <button class="icon-btn" id="airplayBtn" title="airplay">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 17H4a2 2 0 01-2-2V5a2 2 0 012-2h16a2 2 0 012 2v10a2 2 0 01-2 2h-1"/><path d="M12 14.5l5.5 6.5h-11l5.5-6.5z"/></svg>
         </button>
       </div>
     </div>
@@ -758,13 +765,12 @@ function randGap() {
   return STATION_ID_MIN_GAP +
     Math.floor(Math.random() * (STATION_ID_MAX_GAP - STATION_ID_MIN_GAP + 1));
 }
-/* The next track is prefetched at the START of the current one, so by the
-   time the counter is consulted for slot N+1, the song in slot N has
-   usually already counted itself. Each cycle's reset therefore absorbs one
-   decrement from the song playing when the ID gets picked — except the
-   very first cycle, which has no such song; starting one lower keeps the
-   first gap inside 4–8 too. */
-let songsUntilStationId = randGap() - 1;
+/* The next track is prefetched ~30s before the END of the current one, so
+   by the time the counter is consulted for slot N+1, the song in slot N
+   has already counted itself (a song under a minute can pick before it
+   counts — a harmless occasional off-by-one). Each reset to randGap()
+   therefore means exactly that many counted songs before the next ID. */
+let songsUntilStationId = randGap();
 let idShuffleBag = [];
 function pickNext() {
   if (idQueue.length > 0 && songsUntilStationId <= 0) {
@@ -808,7 +814,12 @@ function applyLoadedTrack(trackId, data, attemptPlay, isStationId) {
 /* Prefetch the next track's stream while the current one is still
    playing (a page playing audio keeps running in the background; a page
    in a silent gap between tracks does not — that's why auto-advance was
-   dying in the car). */
+   dying in the car). It fires ~30s before the track ends, not at its
+   start: SoundCloud stream URLs expire, and a URL fetched at the start of
+   an 8-minute song could be stale by the swap. At T-30s the page is still
+   audibly playing (so iOS keeps it alive for the fetch) and channel-
+   surfing past a track no longer burns a prefetch. */
+const PREFETCH_BEFORE_END_SEC = 30;
 let nextUp = null; // { id, data, isStationId }
 let prefetchInFlight = false;
 async function prefetchNextTrack() {
@@ -989,7 +1000,6 @@ audioEl.addEventListener('playing', () => {
   failureStreak = 0;
   applyMediaSessionHandlers();
   updatePositionState();
-  prefetchNextTrack();
 });
 // Native HLS playback (Safari) surfaces failures on the element itself;
 // in hls.js mode errors arrive via the Hls ERROR event instead.
@@ -1005,6 +1015,17 @@ audioEl.addEventListener('timeupdate', () => {
   if (!gapCounted && hasStarted && !currentIsStationId && audioEl.currentTime >= GAP_COUNT_AT_SEC) {
     gapCounted = true;
     songsUntilStationId--;
+  }
+  // Prefetch the next track once this one is inside its final 30 seconds.
+  // Tracks shorter than that — station IDs especially — prefetch on the
+  // first timeupdate, so even a 10s ID has its whole length for the fetch
+  // to land before the silent gap. Unknown duration (HLS manifest not
+  // settled yet) also prefetches immediately: never risk reaching 'ended'
+  // empty-handed, because a fetch during silence dies on a locked phone.
+  // nextUp/prefetchInFlight make repeat firings a no-op.
+  if (isPlaying && (!isFinite(audioEl.duration) ||
+      audioEl.duration - audioEl.currentTime < PREFETCH_BEFORE_END_SEC)) {
+    prefetchNextTrack();
   }
   // Keep the lock-screen progress bar honest, about once a second.
   const now = Date.now();
@@ -1028,6 +1049,29 @@ document.getElementById('skipBtn').addEventListener('click', () => nextTrack());
 document.getElementById('soundcloudLinkBtn').addEventListener('click', () => {
   if (currentPermalinkUrl) window.open(currentPermalinkUrl, '_blank');
 });
+
+/* ---------- AIRPLAY ----------
+   Safari (macOS + iOS) can route the <audio> element's output to AirPlay
+   speakers; the button only appears once the browser reports a routable
+   target nearby. Chrome/Firefox take the standard Remote Playback API
+   branch (Cast, if anything) or, lacking both APIs, never show it. */
+audioEl.setAttribute('x-webkit-airplay', 'allow');
+const airplayBtn = document.getElementById('airplayBtn');
+if (window.WebKitPlaybackTargetAvailabilityEvent) {
+  audioEl.addEventListener('webkitplaybacktargetavailabilitychanged', (e) => {
+    airplayBtn.classList.toggle('available', e.availability === 'available');
+  });
+  airplayBtn.addEventListener('click', () => {
+    audioEl.webkitShowPlaybackTargetPicker();
+  });
+} else if (audioEl.remote && typeof audioEl.remote.watchAvailability === 'function') {
+  audioEl.remote.watchAvailability((available) => {
+    airplayBtn.classList.toggle('available', available);
+  }).catch(() => {}); // rejects where remote playback is disallowed — stay hidden
+  airplayBtn.addEventListener('click', () => {
+    audioEl.remote.prompt().catch(() => {});
+  });
+}
 
 /* ---------- CLOCK (top caption) ---------- */
 function updateClock() {
