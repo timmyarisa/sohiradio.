@@ -607,7 +607,15 @@ function playWithFade() {
     fadeTo(1);
   }).catch((err) => {
     cancelFade();
-    showCueIfBlocked(err);
+    if (err && err.name === 'NotAllowedError') { showCueIfBlocked(err); return; }
+    // AbortError means a newer load replaced the source mid-play — that
+    // load owns the element now. Any OTHER rejection on a resume attempt
+    // means the source is dead (expired stream URL): refetch this same
+    // track at this same position instead of failing silently.
+    if (err && err.name !== 'AbortError' &&
+        hasStarted && currentTrack && audioEl.paused && !pendingPlayIntent) {
+      startInPlaceResume(audioEl.currentTime);
+    }
   });
 }
 
@@ -631,6 +639,7 @@ function loadHlsJsIfNeeded(callback) {
 function setStreamSource(url, autoplay) {
   hlsRecoveries = 0;
   cancelFade(); // a fade belonging to the previous track must not pause this one
+  posAnchor = null; // never drift-compare the new track against the old anchor
   if (supportsNativeHls) {
     audioEl.src = url;
     if (autoplay) audioEl.play().catch(showCueIfBlocked);
@@ -694,6 +703,15 @@ let userPauseIntent = false;   // the next pause event is the listener's own doi
 let systemInterrupted = false; // paused by a call/Siri/route change, not the user
 let interruptedAt = 0;
 let offlineHold = null;  // { at } — track position parked while offline
+let pendingPlayIntent = false; // a load with intent-to-play is in flight (Spotify's LoadingPlay)
+let pendingPlayTimer = null;   // safety net: settle the UI if such a load silently dies
+let posAnchor = null;    // { at, pos } — last position pushed to the lock screen
+let pausedAt = 0;        // wall-clock of the last REAL pause; 0 while playing
+let lastMediaMetadata = null;  // for idempotent re-assert on 'playing'
+let resumingSince = 0;   // a stale-URL resume is in flight (wall-clock start)
+let resumePosSnapshot = 0;     // position captured when that resume started
+const STALE_RESUME_MS = 10 * 60 * 1000; // paused longer → stream URL presumed expired
+const POSITION_DRIFT_SEC = 1;  // librespot's lock-screen re-push threshold
 
 /* A track died mid-flight (network drop, expired segment URL, decode
    problem). librespot re-requests the failed ranges instead of abandoning
@@ -710,7 +728,27 @@ function handlePlaybackError(context) {
   // returns, instead of churning through the whole failure budget.
   if (navigator.onLine === false) {
     npLabel.textContent = 'RECONNECTING';
+    settlePendingPlayIntent(); // holding, not loading
     offlineHold = { at: audioEl.currentTime };
+    return;
+  }
+  // An error inside a stale-URL resume must stay on THIS song: retry the
+  // refetch at the snapshotted position (the element may have reset
+  // currentTime to 0), and if that also fails, stand by with the same
+  // track loaded — never wander off to a different song mid-resume.
+  if (resumingSince && Date.now() - resumingSince < 5000) {
+    if (!resumeAttempted) {
+      resumeAttempted = true;
+      resumingSince = Date.now(); // keep the window open across the retry's fetch
+      resumeCurrentTrackAt(resumePosSnapshot);
+      return;
+    }
+    settlePendingPlayIntent();
+    setPlayingUI(false);
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
+    npTitle.textContent = "stream trouble — tap play to retry";
+    npLabel.textContent = 'STANDBY';
+    resumingSince = 0;
     return;
   }
   const resumeAt = audioEl.currentTime;
@@ -721,6 +759,11 @@ function handlePlaybackError(context) {
   }
   failureStreak++;
   if (failureStreak >= Math.min(queue.length, 5)) {
+    // Dead air must not keep saying "playing": settle everything and stop
+    // offering the lock screen a pause button that would lie.
+    settlePendingPlayIntent();
+    setPlayingUI(false);
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
     npTitle.textContent = "stream trouble — tap play to retry";
     npLabel.textContent = 'STANDBY';
     failureStreak = 0;
@@ -750,14 +793,28 @@ async function resumeCurrentTrackAt(positionSec) {
       if (isFinite(audioEl.duration)) {
         positionSec = Math.min(positionSec, Math.max(0, audioEl.duration - 1));
       }
-      audioEl.currentTime = positionSec;
-      updatePositionState();
+      audioEl.currentTime = positionSec; // 'seeked' re-anchors the lock screen
     }, { once: true });
   } catch (err) {
     if (seq !== loadSeq) return;
     console.warn("in-place resume failed:", err);
     handlePlaybackError("resume refetch failed");
   }
+}
+
+/* A resume whose stream URL is presumed dead (long pause) or proved dead
+   (play() rejected): refetch this same track and seek back, reporting
+   'playing' optimistically so the lock-screen button doesn't hang on the
+   fetch. resumingSince/resumePosSnapshot pin any failures during the
+   window to THIS song — never a skip to a different one. */
+function startInPlaceResume(positionSec) {
+  if (!currentTrack) return;
+  resumingSince = Date.now();
+  resumePosSnapshot = positionSec;
+  resumeAttempted = false; // a fresh user gesture earns a fresh budget
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+  npLabel.textContent = 'CONNECTING';
+  resumeCurrentTrackAt(positionSec);
 }
 
 npTitle.textContent = "loading playlist...";
@@ -857,10 +914,9 @@ async function preloadFirstTrack() {
       audioEl.addEventListener('loadedmetadata', () => {
         let p = resumePos;
         if (isFinite(audioEl.duration)) p = Math.min(p, Math.max(0, audioEl.duration - 2));
-        audioEl.currentTime = p;
+        audioEl.currentTime = p; // 'seeked' re-anchors the lock screen
         // The song already earned its station-ID count last session.
         if (p >= GAP_COUNT_AT_SEC) gapCounted = true;
-        updatePositionState();
       }, { once: true });
     }
   } catch (err) {
@@ -950,8 +1006,29 @@ function applyLoadedTrack(trackId, data, attemptPlay, isStationId) {
     artworkUrl: isStationId ? null : data.artworkUrl,
   });
 
+  if (attemptPlay) armPendingPlayIntent();
   const proxiedUrl = `/.netlify/functions/stream-proxy?url=${encodeURIComponent(data.streamUrl)}`;
   setStreamSource(proxiedUrl, attemptPlay);
+}
+
+/* LoadingPlay (librespot): while a load that intends to play is in flight,
+   the lock screen keeps saying "playing" — transition pauses are
+   suppressed. The 15s timer is the safety net for a load that dies
+   without ever firing an error: settle the UI back to the truth. */
+function armPendingPlayIntent() {
+  pendingPlayIntent = true;
+  if (pendingPlayTimer) clearTimeout(pendingPlayTimer);
+  pendingPlayTimer = setTimeout(() => {
+    pendingPlayTimer = null;
+    if (pendingPlayIntent && audioEl.paused) {
+      pendingPlayIntent = false;
+      setPlayingUI(false);
+    }
+  }, 15000);
+}
+function settlePendingPlayIntent() {
+  pendingPlayIntent = false;
+  if (pendingPlayTimer) { clearTimeout(pendingPlayTimer); pendingPlayTimer = null; }
 }
 
 /* Prefetch the next track's stream while the current one is still
@@ -1001,6 +1078,9 @@ function discardNextUp() {
 let loadSeq = 0; // guards against rapid skips resolving out of order
 async function loadAndPlayTrack(trackId, attemptPlay, isStationId) {
   const seq = ++loadSeq;
+  // The whole CONNECTING window counts as LoadingPlay: a skip's fetch must
+  // not read as "paused" on the lock screen.
+  if (attemptPlay) armPendingPlayIntent();
   npLabel.textContent = 'CONNECTING';
   npTitle.textContent = "tuning in...";
   try {
@@ -1029,6 +1109,11 @@ async function loadAndPlayTrack(trackId, attemptPlay, isStationId) {
         loadAndPlayTrack(pick.id, attemptPlay, pick.isStationId);
       }, 800);
     } else {
+      // Giving up: settle the playing state too, or the visualizer keeps
+      // dancing and the lock screen keeps a pause button over dead air.
+      settlePendingPlayIntent();
+      setPlayingUI(false);
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
       npTitle.textContent = "stream trouble — tap play to retry";
       failureStreak = 0;
     }
@@ -1042,6 +1127,10 @@ function playRandomTrack() {
 }
 
 function updateMediaSessionMetadata(track) {
+  // Keep the plain object around: iOS sometimes drops metadata that was
+  // set before the element actually played, so 'playing' re-asserts it
+  // (a fresh MediaMetadata instance is what forces iOS to re-read).
+  lastMediaMetadata = track;
   if (!('mediaSession' in navigator)) return;
   let artwork = [];
   if (track.artworkUrl) {
@@ -1073,19 +1162,37 @@ function applyMediaSessionHandlers() {
     ms.setActionHandler('nexttrack', () => nextTrack());
   } catch (e) {}
   // 'seekto' isn't supported everywhere — don't let it break the others.
+  // The handler body gets its own try/catch: the outer one only protects
+  // registration, and the callback runs much later.
   try {
     ms.setActionHandler('seekto', (details) => {
-      if (!isFinite(audioEl.duration)) return;
-      if (details.fastSeek && 'fastSeek' in audioEl) { audioEl.fastSeek(details.seekTime); return; }
-      audioEl.currentTime = details.seekTime;
-      updatePositionState();
+      try {
+        if (!isFinite(audioEl.duration)) return;
+        const t = Math.min(Math.max(details.seekTime || 0, 0), audioEl.duration);
+        if (details.fastSeek && 'fastSeek' in audioEl) {
+          audioEl.fastSeek(t);
+        } else {
+          audioEl.currentTime = t;
+        }
+        // fastSeek may not fire 'seeked' synchronously — push the anchor
+        // now; a duplicate push from the seeked listener is harmless.
+        updatePositionState();
+      } catch (e) {}
     });
+  } catch (e) {}
+  // Explicitly unset the ±15s handlers so iOS favors prev/next buttons.
+  try {
+    ms.setActionHandler('seekbackward', null);
+    ms.setActionHandler('seekforward', null);
   } catch (e) {}
 }
 applyMediaSessionHandlers();
 
-/* Feed the lock screen a live position so it can render a progress bar. */
-let lastPositionUpdate = 0;
+/* Anchor the lock-screen progress bar (librespot's model): push a
+   {position, rate, duration} anchor and let the OS extrapolate. Pushes
+   happen on events — play, pause, seek, duration known — plus a drift
+   check; steady playback pushes nothing, which is exactly what keeps the
+   iOS scrubber from stuttering. */
 let lastSessionSave = 0;
 function updatePositionState() {
   if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
@@ -1095,6 +1202,7 @@ function updatePositionState() {
     playbackRate: audioEl.playbackRate || 1,
     position: Math.min(audioEl.currentTime, audioEl.duration),
   });
+  posAnchor = { at: Date.now(), pos: audioEl.currentTime };
 }
 
 function nextTrack(forcePlay) {
@@ -1107,9 +1215,9 @@ function nextTrack(forcePlay) {
     history.push(currentTrack.id);
     if (history.length > MAX_HISTORY) history.shift();
   }
-  // forcePlay covers track-end auto-advance: the element fires 'pause'
-  // right before 'ended', so isPlaying is already false by the time we
-  // get here even though the radio should absolutely keep going.
+  // forcePlay covers track-end auto-advance. Transition suppression keeps
+  // isPlaying true through the ended-pause these days, so either operand
+  // carries it — forcePlay stays as belt-and-suspenders.
   const shouldPlay = forcePlay || isPlaying || !hasStarted;
   // After prev, forward moves (button or auto-advance) retrace the tracks
   // we backed out of before the radio draws anything new — Spotify walks
@@ -1146,8 +1254,7 @@ const PREV_RESTART_THRESHOLD_SEC = 3;
 function previousTrack() {
   if (currentIsStationId) return; // IDs always play out
   if (audioEl.currentTime > PREV_RESTART_THRESHOLD_SEC) {
-    audioEl.currentTime = 0;
-    updatePositionState();
+    audioEl.currentTime = 0; // 'seeked' re-anchors the lock screen
     return;
   }
   // Skip over any unusable entries (older sessions could store undefined).
@@ -1167,8 +1274,7 @@ function previousTrack() {
       return;
     }
   }
-  audioEl.currentTime = 0;
-  updatePositionState();
+  audioEl.currentTime = 0; // 'seeked' re-anchors the lock screen
 }
 
 function formatTime(s) {
@@ -1193,7 +1299,24 @@ setPlayingUI(false);
 
 audioEl.addEventListener('play', () => setPlayingUI(true));
 audioEl.addEventListener('pause', () => {
+  // Transition pause — the element auto-pauses right before 'ended', and a
+  // load-with-intent-to-play may be in flight after a skip. The radio
+  // hasn't stopped, it's changing songs: report nothing (librespot's
+  // LoadingPlay — Spotify's play button never flickers during an advance).
+  // Don't checkpoint the session here either, or a kill at exactly this
+  // moment would reopen replaying the last 2s of the finished song.
+  // Side effect worth knowing: a call landing mid-transition gets its
+  // pause suppressed too; the new track's play() then rejects and the cue
+  // settles the UI — the user just taps play.
+  const nearEnd = audioEl.ended ||
+    (isFinite(audioEl.duration) && audioEl.duration - audioEl.currentTime < 0.5);
+  if (!userPauseIntent && hasStarted && (nearEnd || pendingPlayIntent)) return;
+  // A real pause: settle the UI, freeze the lock-screen position once,
+  // persist, then classify who asked for it.
   setPlayingUI(false);
+  pausedAt = Date.now();
+  pendingPlayIntent = false;
+  updatePositionState();
   saveSession();
   if (userPauseIntent) {
     // The listener chose this pause — it must never auto-resume.
@@ -1201,8 +1324,7 @@ audioEl.addEventListener('pause', () => {
     systemInterrupted = false;
     return;
   }
-  if (!hasStarted || audioEl.ended ||
-      (isFinite(audioEl.duration) && audioEl.duration - audioEl.currentTime < 0.5)) return;
+  if (!hasStarted) return;
   // Paused by the system: a call, Siri, Bluetooth/headphones dropping, iOS
   // reclaiming audio. Native music apps resume when the interruption ends —
   // remember it so we can do the same.
@@ -1212,12 +1334,21 @@ audioEl.addEventListener('pause', () => {
 // Before hasStarted the only thing that can end is the ~2ms silent unlock
 // blip — advancing on it would race the boot preload with a second load.
 audioEl.addEventListener('ended', () => { if (hasStarted) nextTrack(true); });
+// Every seek — lock-screen scrub, prev-restart, resume-at-position — and
+// every freshly-known duration re-anchors the lock-screen scrubber.
+audioEl.addEventListener('seeked', () => updatePositionState());
+audioEl.addEventListener('durationchange', () => updatePositionState());
 audioEl.addEventListener('playing', () => {
   failureStreak = 0;
   resumeAttempted = false; // real playback again — earn back one resume
   systemInterrupted = false;
   offlineHold = null;
+  settlePendingPlayIntent(); // the LoadingPlay transition landed
+  pausedAt = 0;
+  resumingSince = 0;
   applyMediaSessionHandlers();
+  // Re-assert metadata too: iOS sometimes drops what was set pre-playback.
+  if (lastMediaMetadata) updateMediaSessionMetadata(lastMediaMetadata);
   updatePositionState();
 });
 // Native HLS playback (Safari) surfaces failures on the element itself;
@@ -1246,11 +1377,20 @@ audioEl.addEventListener('timeupdate', () => {
       audioEl.duration - audioEl.currentTime < PREFETCH_BEFORE_END_SEC)) {
     prefetchNextTrack();
   }
-  // Keep the lock-screen progress bar honest, about once a second.
+  // librespot's anchor model: the lock screen extrapolates position on its
+  // own; re-push only when reality has drifted ≥1s from what it's showing
+  // (a buffering stall, a rate hiccup). Steady playback pushes nothing.
   const now = Date.now();
-  if (now - lastPositionUpdate > 1000) {
-    lastPositionUpdate = now;
-    updatePositionState();
+  if (isPlaying) {
+    if (!posAnchor) {
+      updatePositionState(); // first push after a source swap
+    } else {
+      const expected = posAnchor.pos +
+        ((now - posAnchor.at) / 1000) * (audioEl.playbackRate || 1);
+      if (Math.abs(expected - audioEl.currentTime) > POSITION_DRIFT_SEC) {
+        updatePositionState();
+      }
+    }
   }
   // Checkpoint the session every ~10s so a killed tab reopens mid-song.
   if (now - lastSessionSave > 10000) {
@@ -1264,6 +1404,14 @@ function startOrToggle(forcePlay) {
   if (!hasStarted && forcePlay) { playRandomTrack(); return; }
   if (forcePlay) {
     systemInterrupted = false;
+    // Paused long enough that the SoundCloud stream URL has expired —
+    // a plain play() would fail silently or error into a skip. Refetch
+    // this same track at this same position instead (Spotify resumes the
+    // song you paused, always).
+    if (currentTrack && pausedAt && Date.now() - pausedAt > STALE_RESUME_MS) {
+      startInPlaceResume(audioEl.currentTime);
+      return;
+    }
     playWithFade();
   } else {
     pauseWithFade();
@@ -1282,7 +1430,10 @@ document.getElementById('soundcloudLinkBtn').addEventListener('click', () => {
 /* ---------- INTERRUPTION RECOVERY ----------
    A system pause (call, Siri, Bluetooth dropping) should end the way it
    does in Spotify: playback comes back on its own the moment the world
-   does. A deliberate user pause never auto-resumes. */
+   does. A deliberate user pause never auto-resumes. Deliberately NOT
+   wired to visibility/focus: Spotify never resumes just because the app
+   came to the foreground — if iOS paused us so another app could play,
+   returning to the browser must not blast music over it. */
 const INTERRUPT_RESUME_WINDOW_MS = 30 * 60 * 1000;
 function tryResumeAfterInterruption() {
   // Offline hold outranks everything: the stream is dead, play() won't fix
@@ -1297,6 +1448,11 @@ function tryResumeAfterInterruption() {
   if (!systemInterrupted || !hasStarted || !audioEl.paused) return;
   if (Date.now() - interruptedAt > INTERRUPT_RESUME_WINDOW_MS) {
     systemInterrupted = false; // too long ago — treat it like a real pause
+    return;
+  }
+  // A long interruption has an equally dead stream URL as a long pause.
+  if (currentTrack && pausedAt && Date.now() - pausedAt > STALE_RESUME_MS) {
+    startInPlaceResume(audioEl.currentTime);
     return;
   }
   playWithFade(); // rejection is fine; the next trigger tries again
@@ -1316,10 +1472,6 @@ try {
     navigator.mediaDevices.addEventListener('devicechange', () => tryResumeAfterInterruption());
   }
 } catch (e) {}
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) tryResumeAfterInterruption();
-});
-window.addEventListener('focus', () => tryResumeAfterInterruption());
 window.addEventListener('online', () => tryResumeAfterInterruption());
 
 /* Stall watchdog: native HLS (and occasionally hls.js) can hang forever on
@@ -1451,9 +1603,15 @@ function showTapCue() { tapCue.classList.add('visible'); }
 function hideTapCue() { tapCue.classList.remove('visible'); }
 
 /* NotAllowedError is specifically "gesture required" — other rejections
-   (e.g. a play() aborted by a rapid skip) shouldn't summon the cue. */
+   (e.g. a play() aborted by a rapid skip) shouldn't summon the cue.
+   A blocked play also ends any LoadingPlay transition: the lock screen
+   must settle back to the truth instead of claiming "playing" forever. */
 function showCueIfBlocked(err) {
-  if (err && err.name === 'NotAllowedError') showTapCue();
+  if (err && err.name === 'NotAllowedError') {
+    settlePendingPlayIntent();
+    setPlayingUI(false);
+    showTapCue();
+  }
 }
 
 /* ~2ms of silence. Playing it inside a tap handler marks the <audio>
