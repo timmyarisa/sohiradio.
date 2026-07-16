@@ -29,6 +29,7 @@ body {
     var(--bg);
   color: var(--text);
   font-family: 'Space Grotesk', sans-serif;
+  text-transform: lowercase; /* the whole surface reads lowercase, track titles included */
   min-height: 100vh;
   min-height: 100dvh;
   display: flex;
@@ -77,7 +78,6 @@ body::before {
 .menubar-link {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-  text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--text-dim);
   text-decoration: none;
@@ -162,10 +162,9 @@ body::before {
   font-size: 8.5px;
   color: var(--text-dim);
   letter-spacing: 0.12em;
-  text-transform: uppercase;
   padding: 3px 4px;
 }
-.tv-caption-bottom { text-align: right; }
+.tv-caption-bottom { text-align: center; }
 .tv-caption-bottom span { opacity: 0.5; margin: 0 4px; }
 .tv-screen {
   position: relative;
@@ -222,31 +221,6 @@ body::before {
 .tv-vis-toggle svg { width: 12px; height: 12px; }
 .tv-vis-toggle.active { color: var(--text); border-color: rgba(245,243,238,0.3); }
 
-/* ---- channel selector ---- */
-.channel-row {
-  display: flex; align-items: center; gap: 10px;
-  margin: 16px 0;
-}
-.channel-label {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px; color: var(--text-dim);
-  text-transform: uppercase; letter-spacing: 0.1em;
-  flex-shrink: 0;
-}
-.channel-select {
-  flex: 1;
-  appearance: none;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  color: var(--text);
-  font-family: 'Space Grotesk', sans-serif;
-  font-size: 12.5px;
-  font-weight: 500;
-  padding: 9px 12px;
-  border-radius: 2px;
-  cursor: pointer;
-}
-
 /* ---- track card ---- */
 .track-card {
   display: flex; align-items: flex-start; gap: 14px;
@@ -254,10 +228,10 @@ body::before {
   background: rgba(255,255,255,0.015);
   border-radius: 2px;
   padding: 16px;
-  margin-bottom: 18px;
+  margin: 16px 0 18px;
 }
 .track-info { flex: 1; min-width: 0; }
-.np-label { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--text); font-weight: 500; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.np-label { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--text); font-weight: 500; letter-spacing: 0.12em; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
 .np-title { font-weight: 500; font-size: 15.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .np-artist { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
 
@@ -376,7 +350,6 @@ body::before {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--text-dim);
-  text-transform: uppercase;
   letter-spacing: 0.12em;
 }
 .boot-dots span {
@@ -394,7 +367,6 @@ body::before {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10.5px;
   color: var(--text-dim);
-  text-transform: uppercase;
   letter-spacing: 0.14em;
   margin-top: 10px;
   opacity: 0.4;
@@ -406,7 +378,6 @@ body::before {
   font-family: 'JetBrains Mono', monospace;
   font-size: 9.5px;
   color: var(--text-dim);
-  text-transform: uppercase;
   letter-spacing: 0.1em;
   opacity: 0.5;
 }
@@ -418,7 +389,6 @@ body::before {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10.5px;
   color: var(--text-dim);
-  text-transform: uppercase;
   letter-spacing: 0.14em;
   pointer-events: none;
   z-index: 9000;
@@ -447,10 +417,10 @@ body::before {
   <div class="boot-wordmark">sohiradio.</div>
   <div class="boot-tagline">tuning frequencies<span class="boot-dots"><span>.</span><span>.</span><span>.</span></span></div>
   <div class="boot-cue" id="bootCue">warming up…</div>
-  <div class="boot-footer">streaming via soundcloud</div>
+  <div class="boot-footer">powered by soundcloud.</div>
 </div>
 
-<div class="tap-cue" id="tapCue">tap anywhere to tune in</div>
+<div class="tap-cue" id="tapCue">tap play to tune in</div>
 
 <nav class="menubar">
   <div class="menubar-left">
@@ -470,12 +440,11 @@ body::before {
       <div class="dot live" id="liveDot"></div>
       <div class="titlebar-text">sohiradio.stream — v0.2</div>
     </div>
-    <div class="titlebar-status" id="statusText">● LIVE</div>
+    <div class="titlebar-status" id="statusText">● live</div>
   </div>
 
   <div class="content">
     <div class="tv-frame">
-      <div class="tv-caption tv-caption-top" id="clockCaption">--:--</div>
       <div class="tv-screen">
         <div class="tv-wordmark">sohiradio.</div>
         <div class="tv-visualizer" id="tvVisualizer"></div>
@@ -483,19 +452,12 @@ body::before {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 12h3l2-7 4 14 3-10 2 3h4"/></svg>
         </button>
       </div>
-      <div class="tv-caption tv-caption-bottom" id="locationCaption">LOCATING...</div>
-    </div>
-
-    <div class="channel-row">
-      <span class="channel-label">Channel</span>
-      <select id="channelSelect" class="channel-select">
-        <option>sohiradio — default</option>
-      </select>
+      <div class="tv-caption tv-caption-bottom" id="clockCaption">--:--</div>
     </div>
 
     <div class="track-card">
       <div class="track-info">
-        <div class="np-label"><span id="npIcon">◌</span> <span id="npLabel">STANDBY</span></div>
+        <div class="np-label"><span id="npIcon">◌</span> <span id="npLabel">standby</span></div>
         <div class="np-title" id="npTitle">tap play to tune in</div>
         <div class="np-artist" id="npArtist">sohiradio</div>
         <div class="track-time-row">
@@ -624,6 +586,45 @@ function playWithFade() {
 const supportsNativeHls = audioEl.canPlayType('application/vnd.apple.mpegurl') !== '';
 let hls = null;
 
+/* ---------- AUDIO NORMALIZATION ----------
+   librespot normalises every track toward a common loudness before its
+   mixer. SoundCloud's API exposes no per-track loudness data, so the
+   browser equivalent is a gentle real-time leveler: MediaElementSource →
+   DynamicsCompressor → destination. Capturing an element into WebAudio
+   silences its direct output — that would break Safari's AirPlay routing
+   and risk iOS lock-screen/background playback — so this runs ONLY on the
+   hls.js (MSE) browsers, where there's nothing to break and no CORS taint
+   (the audio bytes already arrive via JS). Safari native HLS, desktop and
+   iOS, plays untouched. */
+const normalizationEnabled = !supportsNativeHls &&
+  !!(window.AudioContext || window.webkitAudioContext);
+let normalizationCtx = null;
+function initNormalization() {
+  if (!normalizationEnabled || normalizationCtx) return;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  let source = null;
+  try {
+    normalizationCtx = new Ctx();
+    source = normalizationCtx.createMediaElementSource(audioEl);
+    const comp = normalizationCtx.createDynamicsCompressor();
+    // Leveling, not pumping: soft knee, moderate ratio, slow-ish release.
+    comp.threshold.value = -24;
+    comp.knee.value = 30;
+    comp.ratio.value = 4;
+    comp.attack.value = 0.01;
+    comp.release.value = 0.25;
+    source.connect(comp);
+    comp.connect(normalizationCtx.destination);
+  } catch (e) {
+    // A half-built graph leaves the element routed nowhere — restore a
+    // direct path so audio keeps flowing, just unleveled.
+    console.warn('normalization disabled:', e);
+    if (source && normalizationCtx) {
+      try { source.connect(normalizationCtx.destination); } catch (e2) {}
+    }
+  }
+}
+
 function loadHlsJsIfNeeded(callback) {
   if (supportsNativeHls || window.Hls) { callback(); return; }
   const script = document.createElement('script');
@@ -636,10 +637,19 @@ function loadHlsJsIfNeeded(callback) {
   document.head.appendChild(script);
 }
 
+let activeManifestBlobUrl = null; // blob: manifest currently owned by the element
 function setStreamSource(url, autoplay) {
   hlsRecoveries = 0;
   cancelFade(); // a fade belonging to the previous track must not pause this one
   posAnchor = null; // never drift-compare the new track against the old anchor
+  // The previous swap's blob manifest is unreferenced once a new source
+  // replaces it — release it here, not at consumption time, because the
+  // element may keep reading it right up to this moment.
+  if (activeManifestBlobUrl && activeManifestBlobUrl !== url) {
+    try { URL.revokeObjectURL(activeManifestBlobUrl); } catch (e) {}
+    activeManifestBlobUrl = null;
+  }
+  if (url.indexOf('blob:') === 0) activeManifestBlobUrl = url;
   if (supportsNativeHls) {
     audioEl.src = url;
     if (autoplay) audioEl.play().catch(showCueIfBlocked);
@@ -653,7 +663,9 @@ function setStreamSource(url, autoplay) {
       return;
     }
     if (hls) hls.destroy();
-    hls = new window.Hls();
+    // Double the default forward buffer (librespot's read-ahead spirit):
+    // a network blip drains buffer instead of audio.
+    hls = new window.Hls({ maxBufferLength: 60, backBufferLength: 30 });
     hls.on(window.Hls.Events.ERROR, (evt, data) => {
       if (!data.fatal) return;
       // Try hls.js's own in-place recovery a couple of times before
@@ -727,11 +739,14 @@ function handlePlaybackError(context) {
   // let the 'online' listener revive this same track when connectivity
   // returns, instead of churning through the whole failure budget.
   if (navigator.onLine === false) {
-    npLabel.textContent = 'RECONNECTING';
+    npLabel.textContent = 'reconnecting';
     settlePendingPlayIntent(); // holding, not loading
     offlineHold = { at: audioEl.currentTime };
     return;
   }
+  // A blob-manifest handoff that died before ever playing gets one retry
+  // over the network before any of the heavier machinery below.
+  if (tryBlobFallback()) return;
   // An error inside a stale-URL resume must stay on THIS song: retry the
   // refetch at the snapshotted position (the element may have reset
   // currentTime to 0), and if that also fails, stand by with the same
@@ -747,7 +762,7 @@ function handlePlaybackError(context) {
     setPlayingUI(false);
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
     npTitle.textContent = "stream trouble — tap play to retry";
-    npLabel.textContent = 'STANDBY';
+    npLabel.textContent = 'standby';
     resumingSince = 0;
     return;
   }
@@ -765,7 +780,7 @@ function handlePlaybackError(context) {
     setPlayingUI(false);
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
     npTitle.textContent = "stream trouble — tap play to retry";
-    npLabel.textContent = 'STANDBY';
+    npLabel.textContent = 'standby';
     failureStreak = 0;
     return;
   }
@@ -813,7 +828,7 @@ function startInPlaceResume(positionSec) {
   resumePosSnapshot = positionSec;
   resumeAttempted = false; // a fresh user gesture earns a fresh budget
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-  npLabel.textContent = 'CONNECTING';
+  npLabel.textContent = 'connecting';
   resumeCurrentTrackAt(positionSec);
 }
 
@@ -986,7 +1001,7 @@ function pickNext() {
    and stream source. Deliberately synchronous — when a track ends while
    the phone is locked, iOS suspends the page the moment audio goes
    silent, so the advance to a prefetched track must not await anything. */
-function applyLoadedTrack(trackId, data, attemptPlay, isStationId) {
+function applyLoadedTrack(trackId, data, attemptPlay, isStationId, manifestUrl) {
   // The response may not carry an id, so keep the one we requested —
   // history and shuffle both depend on currentTrack.id existing.
   currentTrack = Object.assign({ id: Number(trackId) }, data);
@@ -1008,7 +1023,22 @@ function applyLoadedTrack(trackId, data, attemptPlay, isStationId) {
 
   if (attemptPlay) armPendingPlayIntent();
   const proxiedUrl = `/.netlify/functions/stream-proxy?url=${encodeURIComponent(data.streamUrl)}`;
-  setStreamSource(proxiedUrl, attemptPlay);
+  // A deep-prefetched manifest plays from memory (librespot's preloaded-
+  // decoder handoff); the network URL stays behind as the one-shot retry
+  // if the blob source dies before ever producing playback.
+  blobFallbackUrl = manifestUrl ? proxiedUrl : null;
+  setStreamSource(manifestUrl || proxiedUrl, attemptPlay);
+}
+
+let blobFallbackUrl = null; // network URL to retry if a blob-sourced load dies pre-playback
+function tryBlobFallback() {
+  if (!blobFallbackUrl) return false;
+  const url = blobFallbackUrl;
+  blobFallbackUrl = null;
+  const wantPlay = pendingPlayIntent || isPlaying || !audioEl.paused;
+  if (wantPlay) armPendingPlayIntent();
+  setStreamSource(url, wantPlay);
+  return true;
 }
 
 /* LoadingPlay (librespot): while a load that intends to play is in flight,
@@ -1040,8 +1070,33 @@ function settlePendingPlayIntent() {
    audibly playing (so iOS keeps it alive for the fetch) and channel-
    surfing past a track no longer burns a prefetch. */
 const PREFETCH_BEFORE_END_SEC = 30;
-let nextUp = null; // { id, data, isStationId, fromForward }
+let nextUp = null; // { id, data, isStationId, fromForward, manifestUrl }
 let prefetchInFlight = false;
+
+/* librespot's preload isn't a URL — it's an opened decoder with the audio
+   bytes already arriving (PlayerPreload::Ready), so its track-end handoff
+   does zero network I/O. The browser equivalent: pull the manifest text
+   down at prefetch time (warming the Netlify function + token on the way),
+   nudge the first segments into the HTTP cache, and hand the swap a blob:
+   URL — the silent gap after 'ended' is exactly when a locked iPhone
+   kills pending fetches. Returns null on any failure: nextUp then rides
+   the network URL, which is the old behavior. */
+async function deepPrefetchManifest(streamUrl) {
+  const resp = await fetch(`/.netlify/functions/stream-proxy?url=${encodeURIComponent(streamUrl)}`);
+  if (!resp.ok) return null;
+  const text = await resp.text();
+  if (!text.includes('#EXTM3U')) return null;
+  const urlLines = text.split('\n').map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
+  urlLines.slice(0, 2).forEach((seg) => {
+    try { fetch(seg).catch(() => {}); } catch (e) {}
+  });
+  // A blob manifest can't resolve relative lines — only hand one off when
+  // every URL in it is absolute (stream-proxy rewrites them that way).
+  if (urlLines.some((l) => !/^https?:\/\//i.test(l))) return null;
+  return URL.createObjectURL(new Blob([text], { type: 'application/vnd.apple.mpegurl' }));
+}
+
 async function prefetchNextTrack() {
   if (nextUp || prefetchInFlight || queue.length < 2) return;
   prefetchInFlight = true;
@@ -1053,7 +1108,9 @@ async function prefetchNextTrack() {
     const resp = await fetch(`/.netlify/functions/track-stream?id=${pick.id}`);
     if (resp.ok) {
       const data = await resp.json();
-      nextUp = { id: pick.id, data, isStationId: pick.isStationId, fromForward: !!pick.fromForward };
+      let manifestUrl = null;
+      try { manifestUrl = await deepPrefetchManifest(data.streamUrl); } catch (e) {}
+      nextUp = { id: pick.id, data, isStationId: pick.isStationId, fromForward: !!pick.fromForward, manifestUrl };
     }
     // On failure nextUp stays null; nextTrack() falls back to fetching.
   } catch (e) {} finally { prefetchInFlight = false; }
@@ -1064,6 +1121,7 @@ async function prefetchNextTrack() {
    (Forward-stack picks weren't drawn from a bag — just let them go.) */
 function discardNextUp() {
   if (!nextUp) return;
+  if (nextUp.manifestUrl) { try { URL.revokeObjectURL(nextUp.manifestUrl); } catch (e) {} }
   if (!nextUp.fromForward) {
     if (nextUp.isStationId) {
       idShuffleBag.unshift(nextUp.id);
@@ -1081,7 +1139,7 @@ async function loadAndPlayTrack(trackId, attemptPlay, isStationId) {
   // The whole CONNECTING window counts as LoadingPlay: a skip's fetch must
   // not read as "paused" on the lock screen.
   if (attemptPlay) armPendingPlayIntent();
-  npLabel.textContent = 'CONNECTING';
+  npLabel.textContent = 'connecting';
   npTitle.textContent = "tuning in...";
   try {
     const resp = await fetch(`/.netlify/functions/track-stream?id=${trackId}`);
@@ -1098,7 +1156,7 @@ async function loadAndPlayTrack(trackId, attemptPlay, isStationId) {
     console.error(err);
     npTitle.textContent = "couldn't play this track";
     npArtist.textContent = err.message || "";
-    npLabel.textContent = 'STANDBY';
+    npLabel.textContent = 'standby';
     // Try a different track rather than getting stuck on one that failed —
     // but give up after a few strikes so two dead tracks can't ping-pong
     // requests forever.
@@ -1228,7 +1286,7 @@ function nextTrack(forcePlay) {
       const up = nextUp;
       nextUp = null;
       loadSeq++; // invalidate any older in-flight loads
-      applyLoadedTrack(up.id, up.data, shouldPlay, false);
+      applyLoadedTrack(up.id, up.data, shouldPlay, false, up.manifestUrl);
     } else {
       discardNextUp(); // prefetched for a different position in the stream
       loadAndPlayTrack(id, shouldPlay, false);
@@ -1239,7 +1297,7 @@ function nextTrack(forcePlay) {
     const up = nextUp;
     nextUp = null;
     loadSeq++; // invalidate any older in-flight loads
-    applyLoadedTrack(up.id, up.data, shouldPlay, up.isStationId);
+    applyLoadedTrack(up.id, up.data, shouldPlay, up.isStationId, up.manifestUrl);
   } else {
     const pick = pickNext();
     loadAndPlayTrack(pick.id, shouldPlay, pick.isStationId);
@@ -1288,9 +1346,9 @@ function setPlayingUI(playing) {
   isPlaying = playing;
   playTile.classList.toggle('active', playing);
   pauseTile.classList.toggle('active', !playing);
-  npLabel.textContent = playing ? 'ON AIR' : 'PAUSED';
+  npLabel.textContent = playing ? 'on air' : 'paused';
   npIcon.textContent = playing ? '●' : '◌';
-  statusText.textContent = playing ? '● LIVE' : '○ STANDBY';
+  statusText.textContent = playing ? '● live' : '○ standby';
   if ('mediaSession' in navigator) {
     navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
   }
@@ -1339,6 +1397,8 @@ audioEl.addEventListener('ended', () => { if (hasStarted) nextTrack(true); });
 audioEl.addEventListener('seeked', () => updatePositionState());
 audioEl.addEventListener('durationchange', () => updatePositionState());
 audioEl.addEventListener('playing', () => {
+  setPlayingUI(true); // restores ON AIR after a BUFFERING spell ('play' won't re-fire)
+  blobFallbackUrl = null; // the blob manifest produced real playback
   failureStreak = 0;
   resumeAttempted = false; // real playback again — earn back one resume
   systemInterrupted = false;
@@ -1350,6 +1410,28 @@ audioEl.addEventListener('playing', () => {
   // Re-assert metadata too: iOS sometimes drops what was set pre-playback.
   if (lastMediaMetadata) updateMediaSessionMetadata(lastMediaMetadata);
   updatePositionState();
+  // Normalization graph spins up on first real playback (autoplay policy
+  // keeps a fresh AudioContext suspended until audio is actually allowed).
+  initNormalization();
+  if (normalizationCtx && normalizationCtx.state === 'suspended') {
+    normalizationCtx.resume().catch(() => {});
+  }
+});
+/* Rebuffering shorter than the 10s stall watchdog used to be invisible —
+   ON AIR over silence. 'waiting' means playback is actually blocked on
+   data; 'stalled' only counts when the buffer is genuinely empty
+   (readyState < HAVE_FUTURE_DATA), because browsers fire it benignly
+   while playing happily from a full buffer. Deliberately does NOT touch
+   isPlaying or the lock screen: a stall is not a pause (librespot reports
+   it the same way). The 'playing' listener above restores ON AIR. */
+function showBuffering() {
+  if (!hasStarted || !isPlaying || audioEl.paused) return;
+  npLabel.textContent = 'buffering';
+  npIcon.textContent = '◌';
+}
+audioEl.addEventListener('waiting', showBuffering);
+audioEl.addEventListener('stalled', () => {
+  if (audioEl.readyState < 3) showBuffering();
 });
 // Native HLS playback (Safari) surfaces failures on the element itself;
 // in hls.js mode errors arrive via the Hls ERROR event instead.
@@ -1367,14 +1449,19 @@ audioEl.addEventListener('timeupdate', () => {
     songsUntilStationId--;
   }
   // Prefetch the next track once this one is inside its final 30 seconds.
-  // Tracks shorter than that — station IDs especially — prefetch on the
-  // first timeupdate, so even a 10s ID has its whole length for the fetch
-  // to land before the silent gap. Unknown duration (HLS manifest not
-  // settled yet) also prefetches immediately: never risk reaching 'ended'
-  // empty-handed, because a fetch during silence dies on a locked phone.
+  // Tracks shorter than that — station IDs especially — prefetch as soon
+  // as their (short) duration is known, so even a 10s ID has most of its
+  // length for the fetch to land before the silent gap. Duration is
+  // briefly NaN right after every source swap; firing on that would
+  // prefetch the next track at the START of every song — hours early on a
+  // long one, exactly the stream-URL staleness T-30s exists to avoid. So
+  // unknown duration only prefetches after a 5s grace (never risk reaching
+  // 'ended' empty-handed if the manifest truly never settles, because a
+  // fetch during silence dies on a locked phone).
   // nextUp/prefetchInFlight make repeat firings a no-op.
-  if (isPlaying && (!isFinite(audioEl.duration) ||
-      audioEl.duration - audioEl.currentTime < PREFETCH_BEFORE_END_SEC)) {
+  if (isPlaying && (isFinite(audioEl.duration)
+      ? audioEl.duration - audioEl.currentTime < PREFETCH_BEFORE_END_SEC
+      : audioEl.currentTime >= 5)) {
     prefetchNextTrack();
   }
   // librespot's anchor model: the lock screen extrapolates position on its
@@ -1533,7 +1620,11 @@ if (window.WebKitPlaybackTargetAvailabilityEvent) {
   airplayBtn.addEventListener('click', () => {
     audioEl.webkitShowPlaybackTargetPicker();
   });
-} else if (audioEl.remote && typeof audioEl.remote.watchAvailability === 'function') {
+} else if (!normalizationEnabled &&
+    audioEl.remote && typeof audioEl.remote.watchAvailability === 'function') {
+  // Remote Playback (Cast) streams the ELEMENT's output, which the
+  // normalization graph captures — casting would cast silence. Where
+  // normalization runs, the button stays hidden.
   audioEl.remote.watchAvailability((available) => {
     airplayBtn.classList.toggle('available', available);
   }).catch(() => {}); // rejects where remote playback is disallowed — stay hidden
@@ -1542,26 +1633,23 @@ if (window.WebKitPlaybackTargetAvailabilityEvent) {
   });
 }
 
-/* ---------- CLOCK (top caption) ---------- */
+/* ---------- CLOCK + TIMEZONE (bottom caption) ----------
+   Local time with the zone's short name ("10:46 am cdt") — re-derived
+   every tick so a DST flip mid-session renames itself. Zones without a
+   real abbreviation come back as "gmt+2"-style, which is fine. */
 function updateClock() {
   const now = new Date();
-  document.getElementById('clockCaption').textContent =
-    now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).toUpperCase();
+  const time = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).toLowerCase();
+  let zone = '';
+  try {
+    const part = new Intl.DateTimeFormat([], { timeZoneName: 'short' })
+      .formatToParts(now).find((p) => p.type === 'timeZoneName');
+    zone = part ? part.value.toLowerCase() : '';
+  } catch (e) {}
+  document.getElementById('clockCaption').textContent = zone ? `${time} ${zone}` : time;
 }
 updateClock();
 setInterval(updateClock, 1000);
-
-/* ---------- LOCATION (bottom caption) ---------- */
-(function setLocationCaption() {
-  try {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
-    const parts = tz.split('/');
-    const place = (parts[parts.length - 1] || "").replace(/_/g, ' ');
-    document.getElementById('locationCaption').textContent = place ? place.toUpperCase() : "SOHISOUNDS.";
-  } catch (e) {
-    document.getElementById('locationCaption').textContent = "SOHISOUNDS.";
-  }
-})();
 
 /* ---------- IN-SCREEN AUDIO-REACTIVE VISUALIZER ---------- */
 const tvVisualizer = document.getElementById('tvVisualizer');
@@ -1594,10 +1682,11 @@ visToggle.addEventListener('click', () => {
 });
 
 /* ---------- AUTOPLAY FALLBACK ----------
-   Mobile browsers block sound autoplay before any user interaction. We try
-   immediately once the queue loads; if that's blocked, a "tap anywhere to
-   tune in" cue appears and the first tap/touch anywhere on the page starts
-   playback. */
+   Mobile browsers block sound autoplay before any user interaction. The
+   entry tap lives on the boot screen ONLY — once it's gone, no stray tap
+   on the player chrome can start or otherwise touch the station. If a
+   later play() is blocked, a "tap play to tune in" cue appears and the
+   play tile is the way in. */
 const tapCue = document.getElementById('tapCue');
 function showTapCue() { tapCue.classList.add('visible'); }
 function hideTapCue() { tapCue.classList.remove('visible'); }
@@ -1654,14 +1743,15 @@ function unlockAutoplay() {
    boot screen (before the queue exists) must not burn the listeners. After
    playback has started once, taps must never resume a deliberate pause.
    The silent unlock blip plays before hasStarted — it doesn't count. */
+const bootScreenEl = document.getElementById('bootScreen');
 audioEl.addEventListener('playing', () => {
   hideTapCue();
   if (!hasStarted) return;
-  document.removeEventListener('touchstart', unlockAutoplay);
-  document.removeEventListener('click', unlockAutoplay);
+  bootScreenEl.removeEventListener('touchstart', unlockAutoplay);
+  bootScreenEl.removeEventListener('click', unlockAutoplay);
 });
-document.addEventListener('touchstart', unlockAutoplay, { passive: true });
-document.addEventListener('click', unlockAutoplay);
+bootScreenEl.addEventListener('touchstart', unlockAutoplay, { passive: true });
+bootScreenEl.addEventListener('click', unlockAutoplay);
 </script>
 
 </body>

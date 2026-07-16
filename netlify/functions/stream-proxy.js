@@ -18,6 +18,14 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: "Missing required 'url' query parameter." };
   }
 
+  // Manifests may be served to the player from a blob: URL (prefetched at
+  // T-30s and handed off at the track swap), where relative paths can't
+  // resolve — every rewritten proxy URL must be absolute.
+  const headers = event.headers || {};
+  const proto = headers["x-forwarded-proto"] || "https";
+  const host = headers.host || "";
+  const selfBase = host ? `${proto}://${host}` : "";
+
   try {
     const token = await getAccessToken(event);
     const upstream = await fetch(targetUrl, {
@@ -48,7 +56,7 @@ exports.handler = async (event) => {
           try {
             resolved = new URL(trimmed, targetUrl);
           } catch (e) {
-            return `/.netlify/functions/stream-proxy?url=${encodeURIComponent(trimmed)}`;
+            return `${selfBase}/.netlify/functions/stream-proxy?url=${encodeURIComponent(trimmed)}`;
           }
           // Segment URLs on SoundCloud's CDN are pre-signed (CloudFront
           // Policy/Signature params) and served with open CORS, so the
@@ -58,7 +66,7 @@ exports.handler = async (event) => {
           // still require the Bearer header, so only those come back
           // through the proxy.
           if (resolved.hostname === "api.soundcloud.com") {
-            return `/.netlify/functions/stream-proxy?url=${encodeURIComponent(resolved.toString())}`;
+            return `${selfBase}/.netlify/functions/stream-proxy?url=${encodeURIComponent(resolved.toString())}`;
           }
           return resolved.toString();
         })
