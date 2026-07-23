@@ -18,7 +18,6 @@
   --text-dim: #7A7A7E;
   --line: rgba(245, 243, 238, 0.12);
   --line-soft: rgba(245, 243, 238, 0.06);
-  --bar: 38px;              /* menubar height, referenced by stage padding */
   --mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
@@ -50,48 +49,13 @@ body::before {
 .wm { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 700; letter-spacing: -0.02em; }
 .wm em { font-style: italic; font-weight: 700; }
 
-/* ===== MENUBAR ===== */
-.menubar {
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  height: var(--bar);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 20px;
-  background: rgba(10, 10, 10, 0.82);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--line);
-  z-index: 100;
-}
-.menubar-left, .menubar-right { display: flex; align-items: center; gap: 18px; }
-.menubar-logo { font-size: 14px; color: var(--text); margin-right: 4px; }
-.menubar-link {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  color: var(--text-dim);
-  text-decoration: none;
-  white-space: nowrap;
-  transition: color 0.15s;
-}
-.menubar-link:hover, .menubar-link.active { color: var(--text); }
-.menubar-link.active::before { content: "● "; font-size: 7px; vertical-align: 1px; }
-.menubar-tag {
-  font-size: 8px;
-  border: 1px solid var(--line);
-  padding: 1px 4px;
-  margin-left: 5px;
-  color: var(--text-dim);
-  opacity: 0.7;
-  vertical-align: 1px;
-}
-/* #statusText's ●/○ is the live indicator and the one the engine actually
-   drives (setPlayingUI). #liveDot has no JS binding — kept in the DOM for
-   id stability, hidden so there aren't two lights saying the same thing. */
-#liveDot { display: none; }
-#statusText { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; color: var(--text); }
+/* No menubar. Nothing at the top of the screen asks to be clicked — this is
+   something you leave on, not something you navigate.
+   #statusText is still written on every play/pause by setPlayingUI, and
+   #liveDot has no JS binding at all; both stay in the DOM purely so the
+   engine keeps working. The state a listener actually reads is #npLabel
+   ("on air" / "paused" / "buffering") directly above the title. */
+#liveDot, #statusText { display: none; }
 
 /* ===== STAGE ===== */
 /* No window, no panel, no frame — a single centred column. */
@@ -100,12 +64,11 @@ body::before {
 .stage {
   max-width: 560px;
   margin: 0 auto;
-  /* Symmetric gutters offset by the menubar, so the cluster centres in the
-     space the visitor actually sees. Deliberately no safe-area term here —
-     it only exists at the bottom, and putting it in this padding is what
-     was dragging the cluster upward on a real phone. The colophon carries
-     its own safe-area inset instead. */
-  padding: calc(var(--bar) + 40px) 20px 40px;
+  /* Symmetric gutters — with no menubar the cluster centres on the true
+     viewport. Deliberately no safe-area term here: it only exists at the
+     bottom, and putting it in this padding is what was dragging the
+     cluster upward on a real phone. The colophon carries its own inset. */
+  padding: 40px 20px;
   min-height: 100vh;
   min-height: 100dvh;
   display: flex;
@@ -288,13 +251,11 @@ body::before {
   white-space: nowrap;
 }
 .colophon span { opacity: 0.5; }
+.colophon a { color: inherit; text-decoration: none; transition: color 0.15s; }
+.colophon a:hover { color: var(--text); }
 
 @media (max-width: 480px) {
   .player { gap: 30px; }
-  .menubar { padding: 0 16px; }
-  .menubar-left, .menubar-right { gap: 14px; }
-  /* not-yet-live sections don't earn space on small screens */
-  .menubar-link[aria-disabled="true"] { display: none; }
   .now-title { font-size: 18px; }
 }
 
@@ -436,19 +397,9 @@ body::before {
 
 <div class="tap-cue" id="tapCue">tap play to tune in</div>
 
-<nav class="menubar">
-  <div class="menubar-left">
-    <span class="menubar-logo wm">sohi<em>radio</em>.</span>
-    <a href="/" class="menubar-link active">radio</a>
-    <a href="#" class="menubar-link" aria-disabled="true">archive<span class="menubar-tag">soon</span></a>
-    <a href="#" class="menubar-link" aria-disabled="true">about<span class="menubar-tag">soon</span></a>
-  </div>
-  <div class="menubar-right">
-    <div class="dot live" id="liveDot"></div>
-    <div id="statusText">● live</div>
-    <a href="https://soundcloud.com/sohiradio" target="_blank" rel="noopener" class="menubar-link">soundcloud ↗</a>
-  </div>
-</nav>
+<!-- Engine-driven, never shown: see the #liveDot / #statusText note in the CSS -->
+<div id="liveDot"></div>
+<div id="statusText">● live</div>
 
 <main class="stage">
   <div class="player">
@@ -499,6 +450,8 @@ body::before {
     <div>sohiradio.stream v0.2</div>
     <span>·</span>
     <div id="clockCaption">--:--</div>
+    <span>·</span>
+    <a href="https://soundcloud.com/sohiradio" target="_blank" rel="noopener">soundcloud ↗</a>
   </div>
 </main>
 
