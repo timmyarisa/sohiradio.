@@ -355,11 +355,14 @@ body::before {
    entry screen and it should be in flight before the playlist request is.
    Only the one chosen image is ever fetched. */
 (function () {
-  var COUNT = 6;
+  var COUNT = 7;
+  var GEN = 'v2';   /* assets are immutable-cached (netlify.toml); a new set of
+                       photos ships under a new generation folder, never in place,
+                       so returning visitors actually see the change. */
   var W_FULL = 1080, W_HALF = 720;   /* bump both when larger exports land */
   var n = 1 + Math.floor(Math.random() * COUNT);
-  var full = '/assets/boot/boot-' + n + '.jpg';
-  var half = '/assets/boot/boot-' + n + '@1x.jpg';
+  var full = '/assets/boot/' + GEN + '/boot-' + n + '.jpg';
+  var half = '/assets/boot/' + GEN + '/boot-' + n + '@1x.jpg';
   var srcset = half + ' ' + W_HALF + 'w, ' + full + ' ' + W_FULL + 'w';
 
   var link = document.createElement('link');
