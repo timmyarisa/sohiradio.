@@ -825,17 +825,6 @@ async function loadQueue() {
     queue = (data.tracks || []).filter((t) => t.streamable);
     if (queue.length === 0) throw new Error("Playlist resolved but has no streamable tracks.");
     loadIdQueue();
-    // Restore transport continuity from the last session: prev history,
-    // the forward trail, and where the station-ID cadence left off.
-    const saved = loadSession();
-    if (saved) {
-      const valid = (id) => id != null && !isNaN(id);
-      if (Array.isArray(saved.history)) history = saved.history.filter(valid).slice(-MAX_HISTORY);
-      if (Array.isArray(saved.forwardStack)) forwardStack = saved.forwardStack.filter(valid).slice(-MAX_HISTORY);
-      if (Number.isFinite(saved.songsUntilStationId)) {
-        songsUntilStationId = Math.max(0, Math.min(STATION_ID_MAX_GAP, saved.songsUntilStationId));
-      }
-    }
     // The boot screen is the entry gate: it stays up until the visitor
     // taps, and the tap cue only appears once the first track is loaded
     // and ready to sound immediately.
@@ -872,17 +861,11 @@ function setBootCueReady() {
 
 /* Load the first track's stream while the boot screen is still up, so the
    entry tap goes straight to play() with the source already in place —
-   no post-tap fetches, no silent gap. Reopens like Spotify: the song the
-   listener left, at the position they left it. Only songs restore — a
-   session closed during a station ID starts on a fresh pick instead. */
+   no post-tap fetches, no silent gap. Every load starts on a fresh pick —
+   the station never reopens where a past visit left off; tuning in is
+   always a new moment. */
 async function preloadFirstTrack() {
-  const saved = loadSession();
-  const resumable = saved && saved.trackId != null &&
-    queue.some((t) => t.id === saved.trackId);
-  const pick = resumable
-    ? { id: saved.trackId, isStationId: false }
-    : pickNext();
-  const resumePos = resumable && Number.isFinite(saved.pos) && saved.pos > 5 ? saved.pos : 0;
+  const pick = pickNext();
   try {
     const resp = await fetch(`/.netlify/functions/track-stream?id=${pick.id}`);
     if (!resp.ok) throw new Error(`track-stream failed: ${resp.status}`);
@@ -897,15 +880,6 @@ async function preloadFirstTrack() {
     } else {
       applyLoadedTrack(pick.id, data, false, pick.isStationId);
       setBootCueReady();
-    }
-    if (resumePos) {
-      audioEl.addEventListener('loadedmetadata', () => {
-        let p = resumePos;
-        if (isFinite(audioEl.duration)) p = Math.min(p, Math.max(0, audioEl.duration - 2));
-        audioEl.currentTime = p; // 'seeked' re-anchors the lock screen
-        // The song already earned its station-ID count last session.
-        if (p >= GAP_COUNT_AT_SEC) gapCounted = true;
-      }, { once: true });
     }
   } catch (err) {
     console.error("first-track preload failed:", err);
@@ -1233,7 +1207,6 @@ applyMediaSessionHandlers();
    happen on events — play, pause, seek, duration known — plus a drift
    check; steady playback pushes nothing, which is exactly what keeps the
    iOS scrubber from stuttering. */
-let lastSessionSave = 0;
 function updatePositionState() {
   if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
   if (!isFinite(audioEl.duration) || audioEl.duration <= 0) return;
@@ -1352,12 +1325,11 @@ audioEl.addEventListener('pause', () => {
     (isFinite(audioEl.duration) && audioEl.duration - audioEl.currentTime < 0.5);
   if (!userPauseIntent && hasStarted && (nearEnd || pendingPlayIntent)) return;
   // A real pause: settle the UI, freeze the lock-screen position once,
-  // persist, then classify who asked for it.
+  // then classify who asked for it.
   setPlayingUI(false);
   pausedAt = Date.now();
   pendingPlayIntent = false;
   updatePositionState();
-  saveSession();
   if (userPauseIntent) {
     // The listener chose this pause — it must never auto-resume.
     userPauseIntent = false;
@@ -1464,11 +1436,6 @@ audioEl.addEventListener('timeupdate', () => {
       }
     }
   }
-  // Checkpoint the session every ~10s so a killed tab reopens mid-song.
-  if (now - lastSessionSave > 10000) {
-    lastSessionSave = now;
-    saveSession();
-  }
 });
 
 function startOrToggle(forcePlay) {
@@ -1567,29 +1534,10 @@ setInterval(() => {
   }
 }, 2000);
 
-/* ---------- SESSION CONTINUITY ----------
-   Spotify reopens on the song you left, at the position you left it,
-   paused and ready. Persist just enough to do the same. Station IDs are
-   never a landing spot: a session that closed during one restores to a
-   fresh pick instead (the ID pool has its own rules). */
-const STATE_KEY = 'sohiradio.state.v1';
-function saveSession() {
-  if (!hasStarted || !currentTrack) return;
-  try {
-    localStorage.setItem(STATE_KEY, JSON.stringify({
-      trackId: currentIsStationId ? null : currentTrack.id,
-      pos: currentIsStationId ? 0 : audioEl.currentTime,
-      at: Date.now(),
-      history: history.slice(-MAX_HISTORY),
-      forwardStack: forwardStack.slice(-MAX_HISTORY),
-      songsUntilStationId: songsUntilStationId,
-    }));
-  } catch (e) {}
-}
-function loadSession() {
-  try { return JSON.parse(localStorage.getItem(STATE_KEY) || 'null'); } catch (e) { return null; }
-}
-window.addEventListener('pagehide', saveSession);
+/* No session continuity by design: sohiradio is a radio, not an on-demand
+   player. Every load starts fresh — a new pick, no restored position — so
+   tuning in is always a live moment rather than a resumed one. Nothing about
+   the last visit is persisted. */
 
 /* ---------- AIRPLAY ----------
    Safari (macOS + iOS) can route the <audio> element's output to AirPlay
