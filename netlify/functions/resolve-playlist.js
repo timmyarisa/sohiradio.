@@ -59,12 +59,14 @@ exports.handler = async (event) => {
     const stubIds = rawTracks.filter((t) => !t.title).map((t) => t.id);
 
     let fetchedStubs = [];
+    let stubFetchStatus = null; // null = no stubs to fetch; else the batch HTTP status
     if (stubIds.length > 0) {
       const idsParam = stubIds.join(",");
       const tracksResp = await fetch(
         `https://api.soundcloud.com/tracks?ids=${idsParam}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
+      stubFetchStatus = tracksResp.status;
       if (tracksResp.ok) {
         fetchedStubs = await tracksResp.json();
       }
@@ -75,6 +77,25 @@ exports.handler = async (event) => {
     const excluded = allTracks
       .filter((t) => t.streamable === false)
       .map((t) => ({ id: t.id, title: t.title || "untitled", reason: "owner-blocked" }));
+
+    // Reconcile stubs against what actually came back. Any stub id the batch
+    // fetch didn't return — a whole-batch failure, or SoundCloud silently
+    // omitting some ids from an otherwise-OK response — would vanish from BOTH
+    // the queue and the excluded list, so "0 excluded" wouldn't mean "every
+    // playlist entry accounted for." Surface each dropped stub instead.
+    if (stubIds.length > 0) {
+      const returnedIds = new Set(fetchedStubs.map((t) => t.id));
+      for (const id of stubIds) {
+        if (returnedIds.has(id)) continue;
+        excluded.push({
+          id,
+          title: "untitled",
+          reason: stubFetchStatus && stubFetchStatus !== 200
+            ? `stub-fetch-${stubFetchStatus}`
+            : "stub-omitted-by-api",
+        });
+      }
+    }
 
     // Check each candidate's actual stream availability up front, so the
     // returned queue only ever contains tracks that will really play —
@@ -178,7 +199,9 @@ exports.handler = async (event) => {
       playlistTitle: playlist.title || "sohiradio",
       tracks,
       excluded,
-      totalInPlaylist: allTracks.length,
+      // Raw playlist size — includes stubs the API dropped (now surfaced in
+      // `excluded`), so this holds the invariant totalInPlaylist === playableCount + excluded.length.
+      totalInPlaylist: rawTracks.length,
       playableCount: tracks.length,
     };
 
