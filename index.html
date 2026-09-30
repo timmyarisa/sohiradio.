@@ -251,6 +251,21 @@ body::before {
 #airplayBtn { display: none; }
 #airplayBtn.available { display: flex; }
 
+/* Like: same idiom as AirPlay — hidden until there's a real track to like
+   (station IDs and status states can't be liked). Outline when unliked,
+   filled at full strength when liked; monochrome, on-brand. */
+#likeBtn { display: none; }
+#likeBtn.available { display: flex; }
+.tbtn--like svg { fill: none; stroke: currentColor; stroke-width: 1.8px; }
+.tbtn--like.liked { color: var(--text); }
+.tbtn--like.liked svg { fill: currentColor; stroke: none; }
+.tbtn--like.pop svg { animation: likePop 0.28s ease; }
+@keyframes likePop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.28); }
+  100% { transform: scale(1); }
+}
+
 .colophon {
   font-family: var(--mono);
   font-size: 9px;
@@ -466,7 +481,11 @@ body::before {
   <!-- 3 zones so the primary stays dead centre no matter which utility
        buttons are visible -->
   <div class="transport">
-    <div class="tzone tzone--left"></div>
+    <div class="tzone tzone--left">
+      <button class="tbtn tbtn--like" id="likeBtn" title="like" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41 0.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+      </button>
+    </div>
     <div class="tcore">
       <button class="tbtn tbtn--step" id="prevBtn" title="previous">
         <svg viewBox="0 0 24 24" fill="currentColor" style="transform:scaleX(-1)"><path d="M6 5v14l8-7-8-7zM16 5v14h2V5h-2z"/></svg>
@@ -700,6 +719,53 @@ const npTitle = document.getElementById('npTitle');
    (which have no permalink) must not look clickable. */
 function setTitleLink(on) { npTitle.classList.toggle('is-linked', !!on); }
 const npArtist = document.getElementById('npArtist');
+const likeBtn = document.getElementById('likeBtn');
+
+/* ---------- LIKES (Phase 1: device-local) ----------
+   A like is just track.id -> liked, kept in localStorage. No account, no
+   backend — per-device, survives reloads. Station IDs and status states
+   have no real track and can't be liked (same rule as the title link). */
+const LIKES_KEY = 'sohiradio.likes.v1';
+function loadLikes() {
+  try { return new Set(JSON.parse(localStorage.getItem(LIKES_KEY) || '[]')); }
+  catch (e) { return new Set(); }
+}
+function saveLikes() {
+  try { localStorage.setItem(LIKES_KEY, JSON.stringify([...likes])); } catch (e) {}
+}
+const likes = loadLikes();
+function currentLikeKey() {
+  return (!currentIsStationId && currentTrack && Number.isFinite(currentTrack.id))
+    ? String(currentTrack.id) : null;
+}
+function renderLike() {
+  const key = currentLikeKey();
+  if (!key) {
+    likeBtn.classList.remove('available', 'liked');
+    likeBtn.setAttribute('aria-pressed', 'false');
+    return;
+  }
+  const liked = likes.has(key);
+  likeBtn.classList.add('available');
+  likeBtn.classList.toggle('liked', liked);
+  likeBtn.setAttribute('aria-pressed', liked ? 'true' : 'false');
+  likeBtn.title = liked ? 'liked' : 'like';
+}
+function toggleLike() {
+  const key = currentLikeKey();
+  if (!key) return;
+  if (likes.has(key)) {
+    likes.delete(key);
+  } else {
+    likes.add(key);
+    // restart the pop each time it's freshly liked
+    likeBtn.classList.remove('pop');
+    void likeBtn.offsetWidth;
+    likeBtn.classList.add('pop');
+  }
+  saveLikes();
+  renderLike();
+}
 const curTime = document.getElementById('curTime');
 const durTime = document.getElementById('durTime');
 const progressFill = document.getElementById('progressFill');
@@ -1003,6 +1069,7 @@ function applyLoadedTrack(trackId, data, attemptPlay, isStationId, manifestUrl) 
   npTitle.textContent = shownTitle;
   setTitleLink(currentPermalinkUrl);
   npArtist.textContent = shownArtist;
+  renderLike();
   // New track, new bar — otherwise it hangs at the old track's position
   // until the first timeupdate lands.
   progressFill.style.transition = 'none';
@@ -1505,6 +1572,8 @@ document.getElementById('skipBtn').addEventListener('click', () => nextTrack());
 npTitle.addEventListener('click', () => {
   if (currentPermalinkUrl) window.open(currentPermalinkUrl, '_blank', 'noopener');
 });
+
+likeBtn.addEventListener('click', toggleLike);
 
 /* ---------- INTERRUPTION RECOVERY ----------
    A system pause (call, Siri, Bluetooth dropping) should end the way it
