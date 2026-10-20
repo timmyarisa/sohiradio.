@@ -4,15 +4,48 @@
 // quickly, so we fetch a fresh one per-track right before playing it
 // (see track-stream.js). This function is just for building the queue.
 
-const { getAccessToken } = require("./_soundcloud-auth");
+const { getAccessToken, openStore } = require("./_soundcloud-auth");
 
 // Resolving a playlist means checking every track's actual stream
-// availability (see below), which is a lot of SoundCloud API calls. The
-// playlist rarely changes, so cache the final response per setUrl and reuse
-// it across requests for as long as the function instance stays warm —
-// same pattern as the token cache in _soundcloud-auth.js.
-const playlistCache = new Map(); // setUrl -> { data, expiresAt }
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+// availability (see below) — one /streams call per track, and SoundCloud
+// counts those against the app's daily play-request quota. A 10-minute
+// per-instance cache re-ran the whole sweep on every cold start, and on
+// 2026-10-19 that burned the quota and 429'd every stream on the site.
+// So the result is cached for hours in a shared Netlify Blobs store (every
+// instance reuses one sweep), and a stale copy is served rather than
+// re-sweeping while SoundCloud is refusing requests.
+const playlistCache = new Map(); // setUrl -> { data, expiresAt } — warm-instance layer
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const DEGRADED_TTL_MS = 2 * 60 * 1000;   // a sweep with transient failures isn't kept long
+const BLOB_STORE = "playlist-cache";
+
+function blobKey(setUrl) {
+  return encodeURIComponent(setUrl);
+}
+
+async function readShared(store, setUrl) {
+  if (!store) return null;
+  try {
+    return await store.get(blobKey(setUrl), { type: "json" });
+  } catch (e) {
+    return null;
+  }
+}
+
+async function writeShared(store, setUrl, record) {
+  if (!store) return;
+  try {
+    await store.setJSON(blobKey(setUrl), record);
+  } catch (e) {}
+}
+
+function ok(data) {
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  };
+}
 
 exports.handler = async (event) => {
   const setUrl = event.queryStringParameters && event.queryStringParameters.url;
@@ -26,11 +59,14 @@ exports.handler = async (event) => {
 
   const cached = playlistCache.get(setUrl);
   if (cached && Date.now() < cached.expiresAt) {
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(cached.data),
-    };
+    return ok(cached.data);
+  }
+
+  const store = openStore(BLOB_STORE, event);
+  const shared = await readShared(store, setUrl);
+  if (shared && Date.now() < shared.expiresAt) {
+    playlistCache.set(setUrl, shared);
+    return ok(shared.data);
   }
 
   try {
@@ -43,6 +79,7 @@ exports.handler = async (event) => {
 
     if (!resolveResp.ok) {
       const text = await resolveResp.text();
+      if (shared) return ok(shared.data);
       return {
         statusCode: resolveResp.status,
         body: JSON.stringify({ error: `Failed to resolve playlist: ${text}` }),
@@ -121,25 +158,13 @@ exports.handler = async (event) => {
             // deliberately don't count.
             const ok = !!(streams.hls_aac_160_url || streams.hls_aac_96_url || streams.hls_mp3_128_url);
             if (ok) return { track: t, playable: true, reason: null };
-            // Diagnostics for blocked tracks: what does the API actually
-            // offer for this track, and does the legacy per-track stream
-            // endpoint still serve anything? (302 = it would redirect to
-            // playable audio.) Helps tell "rights-holder blocked" apart
-            // from "playable via a format we don't request yet".
-            let legacyStatus = null;
-            try {
-              const legacyResp = await fetch(
-                `https://api.soundcloud.com/tracks/${t.id}/stream`,
-                { headers: { Authorization: `Bearer ${token}` }, redirect: "manual" }
-              );
-              legacyStatus = legacyResp.status;
-            } catch (e) {}
+            // No legacy /stream probe here: it's another play request
+            // against the quota, spent only on diagnostics.
             return {
               track: t,
               playable: false,
               reason: "no-hls-stream",
               streamKeys: Object.keys(streams),
-              legacyStreamStatus: legacyStatus,
             };
           }
           if ((streamsResp.status === 429 || streamsResp.status >= 500) && attempt === 0) {
@@ -178,7 +203,6 @@ exports.handler = async (event) => {
           title: r.track.title || "untitled",
           reason: r.reason,
           streamKeys: r.streamKeys || undefined,
-          legacyStreamStatus: r.legacyStreamStatus ?? undefined,
         });
       }
     }
@@ -205,17 +229,26 @@ exports.handler = async (event) => {
       playableCount: tracks.length,
     };
 
-    playlistCache.set(setUrl, {
-      data: responseData,
-      expiresAt: Date.now() + CACHE_TTL_MS,
-    });
+    // A 429/5xx/unreachable track isn't really unplayable — the sweep just
+    // couldn't check it. Never let such a sweep replace a good cached one.
+    const degraded = results.some(
+      (r) => !r.playable && /^streams-endpoint-(429|5\d\d|unreachable)$/.test(r.reason)
+    );
+    if (degraded && shared) {
+      playlistCache.set(setUrl, { data: shared.data, expiresAt: Date.now() + DEGRADED_TTL_MS });
+      return ok(shared.data);
+    }
 
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(responseData),
+    const record = {
+      data: responseData,
+      expiresAt: Date.now() + (degraded ? DEGRADED_TTL_MS : CACHE_TTL_MS),
     };
+    playlistCache.set(setUrl, record);
+    if (!degraded) await writeShared(store, setUrl, record);
+
+    return ok(responseData);
   } catch (err) {
+    if (shared) return ok(shared.data);
     return {
       statusCode: 500,
       body: JSON.stringify({ error: err.message }),

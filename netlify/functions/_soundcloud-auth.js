@@ -22,7 +22,7 @@ const BLOB_KEY = "token";
 let mem = null;      // { accessToken, expiresAt, backoffUntil } — warm-instance cache
 let inFlight = null; // de-dupes concurrent refreshes within this instance
 
-function openStore(event) {
+function openStore(name, event) {
   try {
     const blobs = require("@netlify/blobs");
     // Lambda-compatible functions need the event to locate the Blobs
@@ -31,7 +31,7 @@ function openStore(event) {
     if (event && typeof blobs.connectLambda === "function") {
       try { blobs.connectLambda(event); } catch (e) {}
     }
-    return blobs.getStore(BLOB_STORE);
+    return blobs.getStore(name);
   } catch (e) {
     return null;
   }
@@ -119,7 +119,7 @@ async function getAccessToken(event) {
     return mem.accessToken;
   }
 
-  const store = openStore(event);
+  const store = openStore(BLOB_STORE, event);
 
   // Another instance may already have refreshed.
   if (store) {
@@ -151,4 +151,4 @@ async function getAccessToken(event) {
   }
 }
 
-module.exports = { getAccessToken };
+module.exports = { getAccessToken, openStore };
