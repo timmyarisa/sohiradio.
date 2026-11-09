@@ -1,7 +1,8 @@
 // GET /.netlify/functions/track-stream?id=<track id>
 // Returns a fresh, signed, temporary stream URL for one track. Fetched
 // on-demand right before playback (not upfront for the whole playlist),
-// since these signed URLs expire.
+// since these signed URLs expire. Track metadata is NOT included — the
+// client already holds it from resolve-playlist.
 
 const { getAccessToken } = require("./_soundcloud-auth");
 
@@ -18,35 +19,16 @@ exports.handler = async (event) => {
   try {
     const token = await getAccessToken(event);
 
-    // Track metadata (title, artist, artwork, etc.) and the stream URLs
-    // live on separate endpoints. Neither depends on the other, so both go
-    // out together — sequential calls doubled the wait on every track
-    // change. As of Dec 2025, SoundCloud only serves AAC-HLS streams —
-    // progressive MP3 and HLS-MP3/Opus were removed.
-    const auth = { headers: { Authorization: `Bearer ${token}` } };
-    const [trackResp, streamsResp] = await Promise.all([
-      fetch(`https://api.soundcloud.com/tracks/${trackId}`, auth),
-      fetch(`https://api.soundcloud.com/tracks/${trackId}/streams`, auth),
-    ]);
-
-    if (!trackResp.ok) {
-      const text = await trackResp.text();
-      return {
-        statusCode: trackResp.status,
-        body: JSON.stringify({ error: `Failed to fetch track: ${text}` }),
-      };
-    }
-
-    const track = await trackResp.json();
-
-    if (track.streamable === false) {
-      return {
-        statusCode: 403,
-        body: JSON.stringify({
-          error: "This track's owner has disabled streaming outside SoundCloud.",
-        }),
-      };
-    }
+    // Only the stream URL comes from here. Title, artist, artwork and
+    // permalink already arrive with the queue from resolve-playlist (which
+    // also drops non-streamable tracks), so a /tracks/:id call per song
+    // change just spent SoundCloud quota twice for data the client had.
+    // As of Dec 2025, SoundCloud only serves AAC-HLS streams — progressive
+    // MP3 and HLS-MP3/Opus were removed.
+    const streamsResp = await fetch(
+      `https://api.soundcloud.com/tracks/${trackId}/streams`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
 
     if (!streamsResp.ok) {
       const text = await streamsResp.text();
@@ -76,18 +58,7 @@ exports.handler = async (event) => {
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: track.id,
-        streamUrl,
-        protocol: "hls",
-        title: track.title,
-        artist: (track.user && track.user.username) || "unknown artist",
-        artworkUrl: track.artwork_url
-          ? track.artwork_url.replace("-large", "-t500x500")
-          : null,
-        durationMs: track.duration || 0,
-        permalinkUrl: track.permalink_url || null,
-      }),
+      body: JSON.stringify({ id: Number(trackId), streamUrl, protocol: "hls" }),
     };
   } catch (err) {
     return {

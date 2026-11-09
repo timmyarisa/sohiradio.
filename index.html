@@ -1069,7 +1069,16 @@ function pickNext() {
    and stream source. Deliberately synchronous — when a track ends while
    the phone is locked, iOS suspends the page the moment audio goes
    silent, so the advance to a prefetched track must not await anything. */
+/* track-stream returns only the stream URL; title, artist, artwork and
+   permalink come from the queue summaries resolve-playlist already sent. */
+function trackSummary(trackId) {
+  const id = Number(trackId);
+  return queue.find((t) => Number(t.id) === id) ||
+    idQueue.find((t) => Number(t.id) === id) || {};
+}
+
 function applyLoadedTrack(trackId, data, attemptPlay, isStationId, manifestUrl) {
+  data = Object.assign({ title: "untitled", artist: "unknown artist" }, trackSummary(trackId), data);
   // The response may not carry an id, so keep the one we requested —
   // history and shuffle both depend on currentTrack.id existing.
   currentTrack = Object.assign({ id: Number(trackId) }, data);
@@ -1186,7 +1195,8 @@ async function prefetchNextTrack() {
       // Warm the HTTP cache with the lock-screen artwork too (Apple Music
       // runs an artwork preloader for the next queue item), so the art
       // lands with the track change instead of a beat after it.
-      if (data.artworkUrl && !pick.isStationId) new Image().src = data.artworkUrl;
+      const art = trackSummary(pick.id).artworkUrl;
+      if (art && !pick.isStationId) new Image().src = art;
       let manifestUrl = null;
       try { manifestUrl = await deepPrefetchManifest(data.streamUrl); } catch (e) {}
       nextUp = { id: pick.id, data, isStationId: pick.isStationId, fromForward: !!pick.fromForward, manifestUrl };
@@ -1660,6 +1670,7 @@ const STALL_GAP_JUMP_SEC = 0.5;   // Shaka's default gapDetectionThreshold
 let lastProgressPos = -1;
 let lastProgressAt = 0;
 let stallNudged = false;
+let stallEndAdvanced = false;
 function nudgeStalledPlayhead() {
   const t = audioEl.currentTime;
   const buf = audioEl.buffered;
@@ -1678,15 +1689,22 @@ setInterval(() => {
     lastProgressPos = audioEl.currentTime;
     lastProgressAt = Date.now();
     stallNudged = false;
+    stallEndAdvanced = false;
     return;
   }
   const frozenMs = Date.now() - lastProgressAt;
   const dur = audioEl.duration;
+  // Once per freeze, and nothing after it: if the advance's fetch fails (a
+  // SoundCloud 429), the old element stays parked at its tail. Re-advancing
+  // or escalating to a resume would hammer the quota exactly when it's
+  // already spent; the load path's own failure handling settles things.
   if (isFinite(dur) && dur > 0 && audioEl.currentTime > 0 &&
       dur - audioEl.currentTime < STALL_END_WINDOW_SEC) {
-    lastProgressPos = -1;
-    console.warn('stall watchdog: frozen at track end — advancing');
-    nextTrack(true);
+    if (!stallEndAdvanced) {
+      stallEndAdvanced = true;
+      console.warn('stall watchdog: frozen at track end — advancing');
+      nextTrack(true);
+    }
     return;
   }
   if (frozenMs > STALL_TIMEOUT_MS) {
