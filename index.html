@@ -648,17 +648,32 @@ function initNormalization() {
   }
 }
 
+/* One shared load: the boot kick-off below and the first setStreamSource
+   can overlap, and each must not append its own copy of the script. A
+   failed load clears the slot so the next caller retries. */
+let hlsJsWaiters = null;
 function loadHlsJsIfNeeded(callback) {
   if (supportsNativeHls || window.Hls) { callback(); return; }
+  if (hlsJsWaiters) { hlsJsWaiters.push(callback); return; }
+  hlsJsWaiters = [callback];
+  const settle = () => {
+    const waiters = hlsJsWaiters;
+    hlsJsWaiters = null;
+    waiters.forEach((cb) => cb());
+  };
   const script = document.createElement('script');
   script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
-  script.onload = callback;
+  script.onload = settle;
   script.onerror = () => {
     console.error('Failed to load hls.js');
-    callback();
+    script.remove();
+    settle();
   };
   document.head.appendChild(script);
 }
+// Fetch hls.js while the boot screen is up, not on the first play —
+// otherwise MSE browsers put a CDN round-trip in front of the first note.
+loadHlsJsIfNeeded(() => {});
 
 let activeManifestBlobUrl = null; // blob: manifest currently owned by the element
 function setStreamSource(url, autoplay) {
@@ -1168,6 +1183,10 @@ async function prefetchNextTrack() {
     const resp = await fetch(`/.netlify/functions/track-stream?id=${pick.id}`);
     if (resp.ok) {
       const data = await resp.json();
+      // Warm the HTTP cache with the lock-screen artwork too (Apple Music
+      // runs an artwork preloader for the next queue item), so the art
+      // lands with the track change instead of a beat after it.
+      if (data.artworkUrl && !pick.isStationId) new Image().src = data.artworkUrl;
       let manifestUrl = null;
       try { manifestUrl = await deepPrefetchManifest(data.streamUrl); } catch (e) {}
       nextUp = { id: pick.id, data, isStationId: pick.isStationId, fromForward: !!pick.fromForward, manifestUrl };
@@ -1626,20 +1645,58 @@ window.addEventListener('online', () => tryResumeAfterInterruption());
    a network transition — wifi dropping to cellular in the car — without
    ever firing an error. If the UI says playing but the playhead hasn't
    moved in 10s, treat it as a stream death; the in-place resume machinery
-   brings the same track back at the same position. */
+   brings the same track back at the same position.
+   Two cheaper outs come first. A freeze in the last moments of a track is
+   a missing 'ended' (HLS's final segment can run short of the declared
+   duration), not a dead stream — Spotify's web engine synthesizes 'ended'
+   on a timer for the same reason — so advance instead of refetching the
+   song to replay its last second. And mid-track, Shaka-style: jump a small
+   hole in the buffer, or re-seek in place to kick a wedged decoder, before
+   paying for a full resume. */
 const STALL_TIMEOUT_MS = 10000;
+const STALL_NUDGE_MS = 4000;
+const STALL_END_WINDOW_SEC = 1.5;
+const STALL_GAP_JUMP_SEC = 0.5;   // Shaka's default gapDetectionThreshold
 let lastProgressPos = -1;
 let lastProgressAt = 0;
+let stallNudged = false;
+function nudgeStalledPlayhead() {
+  const t = audioEl.currentTime;
+  const buf = audioEl.buffered;
+  for (let i = 0; i < buf.length; i++) {
+    const start = buf.start(i);
+    if (start > t && start - t <= STALL_GAP_JUMP_SEC) {
+      audioEl.currentTime = start; // 'seeked' re-anchors the lock screen
+      return;
+    }
+  }
+  audioEl.currentTime = t;
+}
 setInterval(() => {
   if (!isPlaying || !hasStarted || audioEl.paused || offlineHold) { lastProgressPos = -1; return; }
   if (audioEl.currentTime !== lastProgressPos) {
     lastProgressPos = audioEl.currentTime;
     lastProgressAt = Date.now();
+    stallNudged = false;
     return;
   }
-  if (Date.now() - lastProgressAt > STALL_TIMEOUT_MS) {
+  const frozenMs = Date.now() - lastProgressAt;
+  const dur = audioEl.duration;
+  if (isFinite(dur) && dur > 0 && audioEl.currentTime > 0 &&
+      dur - audioEl.currentTime < STALL_END_WINDOW_SEC) {
+    lastProgressPos = -1;
+    console.warn('stall watchdog: frozen at track end — advancing');
+    nextTrack(true);
+    return;
+  }
+  if (frozenMs > STALL_TIMEOUT_MS) {
     lastProgressPos = -1;
     handlePlaybackError('stall watchdog: playhead frozen');
+    return;
+  }
+  if (frozenMs > STALL_NUDGE_MS && !stallNudged) {
+    stallNudged = true;
+    nudgeStalledPlayhead();
   }
 }, 2000);
 

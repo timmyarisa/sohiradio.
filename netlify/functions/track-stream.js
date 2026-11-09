@@ -18,10 +18,16 @@ exports.handler = async (event) => {
   try {
     const token = await getAccessToken(event);
 
-    // Track metadata (title, artist, artwork, etc.)
-    const trackResp = await fetch(`https://api.soundcloud.com/tracks/${trackId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    // Track metadata (title, artist, artwork, etc.) and the stream URLs
+    // live on separate endpoints. Neither depends on the other, so both go
+    // out together — sequential calls doubled the wait on every track
+    // change. As of Dec 2025, SoundCloud only serves AAC-HLS streams —
+    // progressive MP3 and HLS-MP3/Opus were removed.
+    const auth = { headers: { Authorization: `Bearer ${token}` } };
+    const [trackResp, streamsResp] = await Promise.all([
+      fetch(`https://api.soundcloud.com/tracks/${trackId}`, auth),
+      fetch(`https://api.soundcloud.com/tracks/${trackId}/streams`, auth),
+    ]);
 
     if (!trackResp.ok) {
       const text = await trackResp.text();
@@ -41,14 +47,6 @@ exports.handler = async (event) => {
         }),
       };
     }
-
-    // As of Dec 2025, SoundCloud only serves AAC-HLS streams — progressive
-    // MP3 and HLS-MP3/Opus were removed. This is a separate endpoint from
-    // the track resource itself.
-    const streamsResp = await fetch(
-      `https://api.soundcloud.com/tracks/${trackId}/streams`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
 
     if (!streamsResp.ok) {
       const text = await streamsResp.text();
